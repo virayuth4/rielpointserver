@@ -13,7 +13,6 @@ async function sendOTPWithServiceAPI(phoneNumber, otp, fullName, requestNumber =
     console.log("\n--- [START] Sending OTP via External Service ---");
     console.log(`[Details] Phone: ${phoneNumber} | OTP: ${otp} | Name: ${fullName} | Attempt: ${requestNumber}`);
     
-    // Clean up base URL to ensure no double slashes (e.g., http://152.42.242.243:3001/)
     const baseUrl = (process.env.NEXT_PUBLIC_OTP_BACKEND || '').replace(/\/+$/, '');
     const otpBackendUrl = `${baseUrl}/api/send-otp`;
     
@@ -24,19 +23,27 @@ async function sendOTPWithServiceAPI(phoneNumber, otp, fullName, requestNumber =
         return { success: false, error: 'Configuration Error: Missing OTP Backend URL' };
     }
 
+    // 👇 server-only secret, no NEXT_PUBLIC_ prefix
+    if (!process.env.OTP_BACKEND_API_KEY) {
+        console.error("❌ [ERROR] process.env.OTP_BACKEND_API_KEY is undefined!");
+        return { success: false, error: 'Configuration Error: Missing OTP Backend API Key' };
+    }
+
     const requestData = { phoneNumber, otp };
 
     try {
         console.log("⏳ Dispatching POST request to SMS Proxy...");
 
         const otpResponse = await axios.post(otpBackendUrl, requestData, {
-            timeout: 8000, // 8-second timeout so the main server won't hang forever
-            headers: { 'Content-Type': 'application/json' }
+            timeout: 8000,
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': process.env.OTP_BACKEND_API_KEY, // 👈 added
+            }
         });
 
         console.log('✅ [RESPONSE DATA]:', otpResponse.data);
 
-        // Check response payload structure
         if (otpResponse.data && (otpResponse.data.success || otpResponse.status === 200)) {
             console.log("🎉 [SUCCESS] OTP sent successfully!");
             return { success: true, message: 'OTP sent successfully', data: otpResponse.data };
@@ -49,13 +56,11 @@ async function sendOTPWithServiceAPI(phoneNumber, otp, fullName, requestNumber =
         console.error("❌ [FAIL] Error sending OTP:");
 
         if (error.code === 'ECONNABORTED') {
-            console.error("   └ Reason: Request timed out (Server at 152.42.242.243 did not respond within 8 seconds). Check firewall/UFW.");
+            console.error("   └ Reason: Request timed out (Server did not respond within 8 seconds). Check firewall/UFW.");
         } else if (error.response) {
-            // Server responded with non-2xx status code
             console.error(`   └ Reason: HTTP ${error.response.status} Status Code`);
             console.error("   └ Response Body:", error.response.data);
         } else if (error.request) {
-            // Request made but no response received (Firewall / Network unreachable)
             console.error("   └ Reason: Connection refused / Unreachable network host. Check if port 3001 is open.");
         } else {
             console.error(`   └ Reason: ${error.message}`);
