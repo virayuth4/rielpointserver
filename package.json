@@ -1,0 +1,47 @@
+{
+  "name": "zingowebservernode3",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "nodemon server.js",
+    "dev": "cross-env NODE_ENV=development nodemon server.js",
+    "local": "cross-env NODE_ENV=local nodemon server.js",
+    "prod": "cross-env NODE_ENV=production node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.685.0",
+    "@aws-sdk/client-ses": "^3.696.0",
+    "@aws-sdk/lib-storage": "^3.802.0",
+    "@aws-sdk/s3-request-presigner": "^3.685.0",
+    "axios": "^1.19.0",
+    "bcrypt": "^6.0.0",
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.5",
+    "crypto": "^1.0.1",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "firebase-admin": "^12.7.0",
+    "ioredis": "^5.4.1",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^1.4.5-lts.1",
+    "node-cron": "^4.6.0",
+    "nodemailer": "^9.0.0",
+    "nodemon": "^3.1.7",
+    "pg": "^8.13.1",
+    "rate-limiter-flexible": "^5.0.4",
+    "recharts": "^2.15.0",
+    "redis": "^4.7.0",
+    "resend": "^4.0.1",
+    "sanitize-html": "^2.13.1",
+    "sharp": "^0.35.3",
+    "twilio": "^5.4.1",
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
+  }
+}
