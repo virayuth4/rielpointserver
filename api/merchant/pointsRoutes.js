@@ -10,6 +10,41 @@ const { route } = require("./merchantRoutes");
 const KHR_PER_USD = 4001;
 const ALLOWED_RATES = [10, 25, 50];
 
+router.get('/points/transactions/:phone', async (req, res) => {
+    const rawPhone = req.params.phone;
+    if (!rawPhone) return res.status(400).json({ error: 'Phone number is required' });
+
+    try {
+        let intlFormat, localFormat;
+
+        if (rawPhone.startsWith('855')) {
+            intlFormat = rawPhone;
+            localFormat = '0' + rawPhone.slice(3);
+        } else if (rawPhone.startsWith('0')) {
+            localFormat = rawPhone;
+            intlFormat = '855' + rawPhone.slice(1);
+        } else {
+            intlFormat = '855' + rawPhone;
+            localFormat = '0' + rawPhone;
+        }
+
+        const result = await zingoPool.query(
+            `SELECT 
+                t.*,
+                m.name AS merchant_name
+             FROM rielpoint_point_transactions t
+             LEFT JOIN rielpoint_merchants m ON t.merchant_id = m.id
+             WHERE t.customer_phone = ANY($1::text[])
+             ORDER BY t.created_at DESC`,
+            [[intlFormat, localFormat]]
+        );
+
+        res.status(200).json({ transactions: result.rows });
+    } catch (err) {
+        console.error('Error fetching guest transactions:', err);
+        res.status(500).json({ error: 'Failed to fetch transactions' });
+    }
+});
 
 router.get('/points/transactions', authenticateFirebaseToken, async (req, res) => {
     console.log('Fetching transactions for user:', req.user.id);
