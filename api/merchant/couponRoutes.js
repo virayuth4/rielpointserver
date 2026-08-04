@@ -342,50 +342,86 @@ router.get('/coupons', async (req, res) => {
 });
 
 router.post('/coupon/create', authenticateFirebaseToken, async (req, res) => {
-    console.log('Received request to create coupon:', req.body);
-  
   try {
-    const userId= req.user.id;
+    const userId = req.user.id;
     const getMerchantIdResult = await zingoPool.query(
       'SELECT id FROM rielpoint_merchants WHERE owner_id = $1',
       [userId]
-    ); 
+    );
     const merchantId = getMerchantIdResult.rows[0]?.id;
-    console.log("merchantId:", merchantId);
     if (!merchantId) {
       return res.status(403).json({ error: 'No merchant associated with this account' });
     }
 
-    const { points_cost, discount_type, discount_value, expires_at } = req.body;
+const { points_cost, discount_type, discount_value, expires_at, title, description } = req.body;
 
-    if (!points_cost || !discount_type || !discount_value) {
-      return res.status(400).json({ error: 'points_cost, discount_type, and discount_value are required' });
+    if (!points_cost || !discount_type) {
+      return res.status(400).json({ error: 'points_cost and discount_type are required' });
     }
-    if (!['percent', 'amount'].includes(discount_type)) {
-      return res.status(400).json({ error: 'discount_type must be "percent" or "amount"' });
+    if (!['percent', 'amount', 'custom'].includes(discount_type)) {
+      return res.status(400).json({ error: 'discount_type must be "percent", "amount", or "custom"' });
+    }
+    if (discount_type === 'custom' && !title?.trim()) {
+      return res.status(400).json({ error: 'title is required for custom coupons' });
+    }
+    if (discount_type !== 'custom' && !discount_value) {
+      return res.status(400).json({ error: 'discount_value is required for percent/amount coupons' });
     }
 
-    const result = await zingoPool.query(
-      `INSERT INTO rielpoint_coupons
-         (merchant_id, points_cost, discount_type, discount_value, expires_at)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING coupon_id, points_cost, discount_type, discount_value, expires_at, is_active, created_at`,
-      [merchantId, points_cost, discount_type, discount_value, expires_at || null]
-    );
+   const result = await zingoPool.query(
+  `INSERT INTO rielpoint_coupons
+     (merchant_id, points_cost, discount_type, discount_value, expires_at, title, description)
+   VALUES ($1, $2, $3, $4, $5, $6, $7)
+   RETURNING coupon_id, points_cost, discount_type, discount_value, expires_at, is_active, created_at, title, description`,
+  [
+    merchantId,
+    points_cost,
+    discount_type,
+    discount_type === 'custom' ? null : discount_value,
+    expires_at || null,
+    title?.trim() || null,
+    description?.trim() || null,
+  ]
+);
 
-    const row = result.rows[0];
-    const discount =
-      row.discount_type === 'percent'
-        ? `${row.discount_value}% off`
-        : `-$${row.discount_value} on everything`;
-
-    res.status(201).json({ coupon: { ...row, discount } });
+    res.status(201).json({ coupon: result.rows[0] });
   } catch (err) {
     console.error('Error creating coupon:', err);
     res.status(500).json({ error: 'Failed to create coupon' });
   }
 });
- 
+
+router.post('/coupon/delete', authenticateFirebaseToken, async (req, res) => {
+  const userId = req.user.id;
+  const { couponId } = req.body;
+  try {
+    const merchantResult = await zingoPool.query(
+      'SELECT id FROM rielpoint_merchants WHERE owner_id = $1',
+      [userId]
+    );
+    const merchantId = merchantResult.rows[0]?.id;
+    if (!merchantId) {
+      return res.status(403).json({ error: 'No merchant associated with this account' });
+    }
+
+    const result = await zingoPool.query(
+      `UPDATE rielpoint_coupons
+       SET is_deleted = $1
+       WHERE coupon_id = $2 AND merchant_id = $3
+       RETURNING coupon_id, points_cost, discount_type, discount_value, expires_at, is_active, created_at`,
+      [true, couponId, merchantId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Coupon not found' });
+    }
+
+    res.status(200).json({ coupon: result.rows[0] });
+  } catch (err) {
+    console.error('Error updating coupon:', err);
+    res.status(500).json({ error: 'Failed to update coupon' });
+  }
+});
 
 router.post('/coupon/status/:couponId', authenticateFirebaseToken, async (req, res) => {
   console.log("patching", req.body.couponId, "with body", req.body);
