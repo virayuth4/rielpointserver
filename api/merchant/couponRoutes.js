@@ -285,6 +285,7 @@ router.post('/coupon/verify', authenticateFirebaseToken, async (req, res) => {
     client.release();
   }
 });
+
 router.get('/coupons/my', authenticateFirebaseToken, async (req, res) => {
   console.log('Fetching claimed coupons for user:', req.user);
   const userId = req.user.id;
@@ -310,6 +311,59 @@ router.get('/coupons/my', authenticateFirebaseToken, async (req, res) => {
     console.error('Error fetching claimed coupons:', err);
     res.status(500).json({ error: 'Failed to fetch claimed coupons' });
   }
+});
+
+router.get('/coupons/available', authenticateFirebaseToken, async (req, res) => {
+    const userId = req.user.id;
+
+    try {
+        const userPhoneNumberResult = await zingoPool.query(
+            `SELECT phone_number FROM rielpoint_users WHERE id = $1`,
+            [userId]
+        );
+
+        const rawPhone = userPhoneNumberResult.rows[0]?.phone_number;
+
+        if (!rawPhone) {
+            return res.status(404).json({ error: 'User phone number not found' });
+        }
+
+        // Normalize: build both "855..." and "0..." variants regardless of
+        // which format is stored on the user row.
+        let intlFormat, localFormat;
+
+        if (rawPhone.startsWith('855')) {
+            intlFormat = rawPhone;
+            localFormat = '0' + rawPhone.slice(3);
+        } else if (rawPhone.startsWith('0')) {
+            localFormat = rawPhone;
+            intlFormat = '855' + rawPhone.slice(1);
+        } else {
+            intlFormat = '855' + rawPhone;
+            localFormat = '0' + rawPhone;
+        }
+
+        const result = await zingoPool.query(
+            `SELECT DISTINCT
+                c.*,
+                m.name AS merchant_name
+             FROM rielpoint_coupons c
+             JOIN rielpoint_merchants m ON c.merchant_id = m.id
+             WHERE c.is_active = true
+               AND c.merchant_id IN (
+                   SELECT DISTINCT t.merchant_id
+                   FROM rielpoint_point_transactions t
+                   WHERE t.customer_phone = ANY($1::text[])
+               )
+             ORDER BY c.created_at DESC`,
+            [[intlFormat, localFormat]]
+        );
+
+        res.status(200).json({ coupons: result.rows });
+    } catch (err) {
+        console.error('Error fetching available coupons:', err);
+        res.status(500).json({ error: 'Failed to fetch available coupons' });
+    }
 });
 
 router.get('/coupons', async (req, res) => {

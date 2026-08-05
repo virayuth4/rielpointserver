@@ -8,7 +8,9 @@ const { normalizePhoneNumber } = require("../../lib/normalizePhoneNumber");
 
 const { randomUUID } = require('crypto');
 
-
+router.get('/merchant/:merchantId', async (req, res) => {{
+  console.log("merchant route")
+}})
 
 router.post('/merchant/create',  async (req, res) => {
   console.log("merchant creation request body:", req.body);
