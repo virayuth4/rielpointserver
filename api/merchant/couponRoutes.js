@@ -8,10 +8,6 @@ const { normalizePhoneNumber } = require("../../lib/normalizePhoneNumber");
 const crypto = require('crypto');
 
 
-function generateOtp() {
-  return crypto.randomInt(0, 1000000).toString().padStart(6, '0');
-}
-
 
 
 // Turn (user_id, merchant_id) into a single bigint for the advisory lock
@@ -24,12 +20,22 @@ function lockKey(userId, merchantId) {
 }
 
 
+
+
 const ALGORITHM = 'aes-256-gcm';
 if (!process.env.OTP_ENCRYPTION_KEY || process.env.OTP_ENCRYPTION_KEY.length !== 64) {
   throw new Error('OTP_ENCRYPTION_KEY must be set to a 64-character hex string (32 bytes)');
 }
 const OTP_KEY = Buffer.from(process.env.OTP_ENCRYPTION_KEY, 'hex');
 
+function generateOtp() {
+  return crypto.randomInt(0, 1000000).toString().padStart(6, '0');
+}
+
+// Deterministic HMAC hash used for database indexes and fast O(1) lookups
+function hashOtp(otp) {
+  return crypto.createHmac('sha256', OTP_KEY).update(otp).digest('hex');
+}
 
 function encryptOtp(otp) {
   const iv = crypto.randomBytes(12);
@@ -80,11 +86,11 @@ router.get('/coupons/my/:claimId/otp', authenticateFirebaseToken, async (req, re
     res.status(500).json({ error: 'Failed to fetch code' });
   }
 });
+
 router.post('/coupons/:id/claim', authenticateFirebaseToken, async (req, res) => {
   const { id } = req.params;
   const userId = req.user?.id;
   const idempotencyKey = req.headers['idempotency-key'];
-  console.log("idempotencyKey:", idempotencyKey, "userId:", userId, "couponId:", id);
 
   if (!idempotencyKey) {
     return res.status(400).json({ error: 'Missing Idempotency-Key header' });
@@ -100,7 +106,6 @@ router.post('/coupons/:id/claim', authenticateFirebaseToken, async (req, res) =>
       [userId]
     );
     const phoneNumber = normalizePhoneNumber(userResult.rows[0]?.phone_number);
-    console.log('phoneNumber', phoneNumber);
 
     const couponResult = await client.query(
       `SELECT * FROM rielpoint_coupons
@@ -116,8 +121,7 @@ router.post('/coupons/:id/claim', authenticateFirebaseToken, async (req, res) =>
     const coupon = couponResult.rows[0];
     const pointsCost = Number(coupon.points_cost);
 
-    // Serialize any concurrent claims for this user+merchant so the
-    // balance check below can't race with another claim's deduction
+    // Serialize any concurrent claims for this user+merchant
     await client.query('SELECT pg_advisory_xact_lock($1)', [
       lockKey(userId, coupon.merchant_id),
     ]);
@@ -137,43 +141,67 @@ router.post('/coupons/:id/claim', authenticateFirebaseToken, async (req, res) =>
 
     const previousBalance = currentPoints;
     const newBalance = currentPoints - pointsCost;
-    const otp = generateOtp();
-        const otpEncrypted = encryptOtp(otp);
 
-      const claimResult = await client.query(
-      `INSERT INTO rielpoint_coupon_claims
-        (coupon_id, customer_id, merchant_id, otp_encrypted, otp_expires_at, claimed_at)
-      VALUES ($1, $2, $3, $4, NOW() + INTERVAL '7 days', NOW())
-      ON CONFLICT (coupon_id, customer_id) WHERE redeemed_at IS NULL DO NOTHING
-      RETURNING claim_id`,
-      [id, userId, coupon.merchant_id, otpEncrypted]
+    // Retry loop to handle rare OTP collisions natively with Postgres
+    let claimId = null;
+    let otp = null;
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      otp = generateOtp();
+      const otpHash = hashOtp(otp);
+      const otpEncrypted = encryptOtp(otp);
+
+      try {
+        await client.query('SAVEPOINT claim_insert_attempt');
+
+        const claimResult = await client.query(
+          `INSERT INTO rielpoint_coupon_claims
+             (coupon_id, customer_id, merchant_id, otp_encrypted, otp_hash, otp_expires_at, claimed_at)
+           VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '7 days', NOW())
+           ON CONFLICT (coupon_id, customer_id) WHERE redeemed_at IS NULL DO NOTHING
+           RETURNING claim_id`,
+          [id, userId, coupon.merchant_id, otpEncrypted, otpHash]
+        );
+
+        await client.query('RELEASE SAVEPOINT claim_insert_attempt');
+
+        if (claimResult.rows.length === 0) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({ error: 'Coupon already claimed' });
+        }
+
+        claimId = claimResult.rows[0].claim_id;
+        break; // Unique OTP successfully stored!
+      } catch (err) {
+        await client.query('ROLLBACK TO SAVEPOINT claim_insert_attempt');
+
+        // Check if error is an OTP uniqueness collision on our index
+        if (err.code === '23505' && err.constraint === 'idx_unique_active_merchant_otp') {
+          console.warn(`OTP collision detected on attempt ${attempt + 1}. Retrying...`);
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (!claimId) {
+      await client.query('ROLLBACK');
+      return res.status(500).json({ error: 'Could not generate unique code. Please try again.' });
+    }
+
+    // Deduct points
+    const txnResult = await client.query(
+      `INSERT INTO rielpoint_point_transactions
+        (user_id, merchant_id, points, type, customer_phone, amount, currency,
+         usd_amount, exchange_rate, points_rate, previous_balance, new_balance,
+         reference_claim_id, idempotency_key, created_at)
+      VALUES ($1, $2, $3, 'coupon_claim', $4, 0, 'USD', 0, 1.0, 1.0, $5, $6, $7, $8, NOW())
+      ON CONFLICT (idempotency_key) DO NOTHING
+      RETURNING id`,
+      [userId, coupon.merchant_id, -pointsCost, phoneNumber,
+       previousBalance, newBalance, claimId, idempotencyKey]
     );
 
-    if (claimResult.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({ error: 'Coupon already claimed' });
-    }
-    const claimId = claimResult.rows[0].claim_id;
-
-    // Deduct by inserting a negative ledger entry, tied back to the claim
-   const txnResult = await client.query(
-  `INSERT INTO rielpoint_point_transactions
-    (user_id, merchant_id, points, type, customer_phone, amount, currency,
-    usd_amount, exchange_rate, points_rate, previous_balance, new_balance,
-    reference_claim_id, idempotency_key, created_at)
-  VALUES ($1, $2, $3, 'coupon_claim', $4, 0, 'USD', 0, 1.0, 1.0, $5, $6, $7, $8, NOW())
-  ON CONFLICT (idempotency_key) DO NOTHING
-  RETURNING id`,
-  [userId, coupon.merchant_id, -pointsCost, phoneNumber,
-   previousBalance, newBalance, claimId, idempotencyKey]
-);
-
-    // If this idempotency key was already used, the insert above was a no-op.
-    // That means this is a retried request for a claim we already created
-    // earlier in this same transaction attempt — but since claimResult
-    // succeeded (rows.length > 0), the claim itself is new, so a conflicting
-    // idempotency key here means the *key* was reused across a different
-    // claim, which is a client bug, not a legitimate retry. Guard against it:
     if (txnResult.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: 'Idempotency key already used for a different transaction' });
@@ -192,7 +220,6 @@ router.post('/coupons/:id/claim', authenticateFirebaseToken, async (req, res) =>
 });
 
 
-
 router.post('/coupon/verify', authenticateFirebaseToken, async (req, res) => {
   const userId = req.user.id;
   const { otp } = req.body;
@@ -201,6 +228,7 @@ router.post('/coupon/verify', authenticateFirebaseToken, async (req, res) => {
     return res.status(400).json({ error: 'OTP code is required' });
   }
   const enteredOtp = otp.trim();
+  const enteredOtpHash = hashOtp(enteredOtp);
 
   const client = await zingoPool.connect();
   try {
@@ -216,32 +244,21 @@ router.post('/coupon/verify', authenticateFirebaseToken, async (req, res) => {
       return res.status(403).json({ error: 'No merchant associated with this account' });
     }
 
-
+    // O(1) indexed database query using otp_hash
     const claimsResult = await client.query(
-      `SELECT cl.claim_id, cl.otp_encrypted, cl.customer_id,
+      `SELECT cl.claim_id, cl.customer_id,
               c.coupon_id, c.discount_type, c.discount_value, c.points_cost
        FROM rielpoint_coupon_claims cl
        JOIN rielpoint_coupons c ON c.coupon_id = cl.coupon_id
        WHERE cl.merchant_id = $1
+         AND cl.otp_hash = $2
          AND cl.redeemed_at IS NULL
          AND cl.otp_expires_at > NOW()
        FOR UPDATE OF cl`,
-      [merchantId]
+      [merchantId, enteredOtpHash]
     );
 
-    let matchedClaim = null;
-    for (const row of claimsResult.rows) {
-      let decrypted;
-      try {
-        decrypted = decryptOtp(row.otp_encrypted);
-      } catch {
-        continue; // legacy/corrupt row — skip, not a match
-      }
-      if (decrypted === enteredOtp) {
-        matchedClaim = row;
-        break;
-      }
-    }
+    const matchedClaim = claimsResult.rows[0];
 
     if (!matchedClaim) {
       await client.query('ROLLBACK');
@@ -285,7 +302,6 @@ router.post('/coupon/verify', authenticateFirebaseToken, async (req, res) => {
     client.release();
   }
 });
-
 router.get('/coupons/my', authenticateFirebaseToken, async (req, res) => {
   console.log('Fetching claimed coupons for user:', req.user);
   const userId = req.user.id;
