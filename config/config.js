@@ -39,7 +39,8 @@ const loadEnvironmentVariables = () => {
         "products-sale-bucket.s3.ap-southeast-1.amazonaws.com",
         "https://king-prawn-app-rrla3.ondigitalocean.app",
         "https://rielpoint.vercel.app",
-        "https://rielpoint-git-main-virayuth-lims-projects.vercel.app"
+        "https://rielpoint-git-main-virayuth-lims-projects.vercel.app",
+        "https://rielpoint.com"
         
     ];
 
