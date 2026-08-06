@@ -8,14 +8,47 @@ const { normalizePhoneNumber } = require("../../lib/normalizePhoneNumber");
 
 const { randomUUID } = require('crypto');
 
+async function sendMerchantCreationNotificationToTelegram(merchant) {
+  const { name, slug, contact_phone, status, owner_id } = merchant;
+  const message =
+    `New Merchant Created in RielPoint:\n\n` +
+    `Name: ${name}\n` +
+    `Slug: ${slug}\n` +
+    `Contact Phone: ${contact_phone}\n` +
+    `Status: ${status}\n` +
+    `Owner ID: ${owner_id}`;
+
+  console.log('Sending merchant creation notification to Telegram with message:', message);
+
+  try {
+    const botToken = String(process.env.TELEGRAM_SUPPORT_BOT_TOKEN.trim());
+    const chatId = Number(process.env.TELEGRAM_CHAT_ID.trim());
+
+    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+
+    await axios.post(url, {
+      chat_id: chatId,
+      text: message,
+      parse_mode: 'Markdown'
+    });
+
+    console.log('Telegram notification sent successfully');
+    return { success: true };
+  } catch (error) {
+    console.error('Error sending Telegram notification:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 router.get('/merchant/:merchantId', async (req, res) => {{
   console.log("merchant route")
 }})
 
-router.post('/merchant/create',  async (req, res) => {
+
+
+router.post('/merchant/create', authenticateFirebaseToken, async (req, res) => {
   console.log("merchant creation request body:", req.body);
   const { name, contact_phone } = req.body;
-
 
   if (!name || !contact_phone) {
     return res.status(400).json({ error: 'Missing required fields' });
@@ -33,7 +66,7 @@ router.post('/merchant/create',  async (req, res) => {
     .replace(/(^-|-$)/g, '');
 
   try {
-   const result = await zingoPool.query(
+    const result = await zingoPool.query(
       `INSERT INTO rielpoint_merchants
         (name, slug, contact_phone, timezone, status, settings, owner_id, created_at, updated_at)
       VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())
@@ -48,8 +81,16 @@ router.post('/merchant/create',  async (req, res) => {
         ownerId,
       ]
     );
+    console.log("result", result);
 
-    return res.status(201).json(result.rows[0]);
+    const merchant = result.rows[0];
+
+    // fire-and-forget, don't block the response on Telegram
+    sendMerchantCreationNotificationToTelegram(merchant).catch((err) =>
+      console.error('Telegram notification failed:', err)
+    );
+
+    return res.status(201).json(merchant);
   } catch (err) {
     if (err.code === '23505') { // unique_violation, likely on slug
       return res.status(409).json({ error: 'A merchant with this name already exists' });
