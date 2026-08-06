@@ -40,7 +40,8 @@ const loadEnvironmentVariables = () => {
         "https://king-prawn-app-rrla3.ondigitalocean.app",
         "https://rielpoint.vercel.app",
         "https://rielpoint-git-main-virayuth-lims-projects.vercel.app",
-        "https://rielpoint.com"
+        "https://rielpoint.com",
+        "https://www.rielpoint.com"
         
     ];
 
