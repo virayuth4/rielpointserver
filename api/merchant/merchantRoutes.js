@@ -133,7 +133,7 @@ router.get('/dashboard', authenticateFirebaseToken, async (req, res) => {
     );
 
     const couponsResult = await zingoPool.query(
-      'SELECT * FROM rielpoint_coupons WHERE merchant_id = $1',
+      'SELECT * FROM rielpoint_coupons WHERE merchant_id = $1 and is_deleted = false',
       [merchant.id]
     );
     // console.log('Coupons result:', couponsResult.rows);
@@ -281,7 +281,7 @@ router.post('/staff/add', authenticateFirebaseToken, async (req, res) => {
 
 router.post('/staff/remove/:rowId', authenticateFirebaseToken, async (req, res) => {
   const { rowId } = req.params;
-  const userId = req.user?.id;
+  const userId = req.user?.id;z
   console.log("Remove staff", rowId, "by user", userId);
 
   if (!rowId) {
