@@ -305,12 +305,11 @@ router.post('/staff/remove/:rowId', authenticateFirebaseToken, async (req, res) 
 
     const merchantId = merchantResult.rows[0].id;
 
-    // Soft-delete: only deactivate if the staff row actually belongs to this merchant
+    // Hard delete: only remove if the staff row actually belongs to this merchant
     const removeStaffResult = await zingoPool.query(
-      `UPDATE rielpoint_staffs
-       SET is_deleted = true
+      `DELETE FROM rielpoint_staffs
        WHERE id = $1 AND merchant_id = $2
-       RETURNING id, merchant_id, staff_id, is_deleted`,
+       RETURNING id, merchant_id, staff_id`,
       [rowId, merchantId]
     );
 
