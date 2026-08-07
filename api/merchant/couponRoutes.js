@@ -423,7 +423,7 @@ router.post('/coupon/create', authenticateFirebaseToken, async (req, res) => {
       return res.status(403).json({ error: 'No merchant associated with this account' });
     }
 
-const { points_cost, discount_type, discount_value, expires_at, title, description } = req.body;
+const { points_cost, discount_type, discount_value, expires_at, title, description, custom_perks } = req.body;
 
     if (!points_cost || !discount_type) {
       return res.status(400).json({ error: 'points_cost and discount_type are required' });
@@ -440,9 +440,9 @@ const { points_cost, discount_type, discount_value, expires_at, title, descripti
 
    const result = await zingoPool.query(
   `INSERT INTO rielpoint_coupons
-     (merchant_id, points_cost, discount_type, discount_value, expires_at, title, description)
-   VALUES ($1, $2, $3, $4, $5, $6, $7)
-   RETURNING coupon_id, points_cost, discount_type, discount_value, expires_at, is_active, created_at, title, description`,
+     (merchant_id, points_cost, discount_type, discount_value, expires_at, title, description, custom_perks)
+   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+   RETURNING coupon_id, points_cost, discount_type, discount_value, expires_at, is_active, created_at, title, description, custom_perks`,
   [
     merchantId,
     points_cost,
@@ -451,6 +451,7 @@ const { points_cost, discount_type, discount_value, expires_at, title, descripti
     expires_at || null,
     title?.trim() || null,
     description?.trim() || null,
+    custom_perks?.trim() || null
   ]
 );
 
