@@ -10,6 +10,68 @@ const { route } = require("./merchantRoutes");
 const KHR_PER_USD = 4001;
 const ALLOWED_RATES = [10, 25, 50];
 
+async function sendPointsNotification(phoneNumber, points, merchantName) {
+    console.log("Sending points notification SMS");
+
+    // Clean the phone number: replace initial 855 with 0
+    let cleanedPhoneNumber = phoneNumber;
+    if (phoneNumber.startsWith('855')) {
+        cleanedPhoneNumber = '0' + phoneNumber.substring(3);
+    }
+     const requestData = { phoneNumber, points, merchantName };
+
+    const baseUrl = (process.env.NEXT_PUBLIC_OTP_BACKEND || '').replace(/\/+$/, '');
+    const otpBackendUrl = `${baseUrl}/api/point-notification`;
+ 
+
+
+    try {
+           console.log(`⏳ Dispatching POST request to SMS Proxy... ${otpBackendUrl}`);
+   
+           const otpResponse = await axios.post(otpBackendUrl, requestData, {
+               timeout: 8000,
+               headers: {
+                   'Content-Type': 'application/json',
+                   'x-api-key': process.env.OTP_BACKEND_API_KEY, 
+               }
+           });
+   
+           console.log('✅ [RESPONSE DATA]:', otpResponse.data);
+   
+           if (otpResponse.data && (otpResponse.data.success || otpResponse.status === 200)) {
+               console.log("🎉 [SUCCESS] POINT Notification sent successfully!");
+               return { success: true, message: 'Point Notification sent successfully', data: otpResponse.data };
+           } else {
+               console.warn("⚠️ [WARNING] API responded but returned unsuccessful payload.");
+               return { success: false, error: 'SMS Provider rejected OTP delivery', details: otpResponse.data };
+           }
+   
+       } catch (error) {
+           console.error("❌ [FAIL] Error sending OTP:");
+   
+           if (error.code === 'ECONNABORTED') {
+               console.error("   └ Reason: Request timed out (Server did not respond within 8 seconds). Check firewall/UFW.");
+           } else if (error.response) {
+               console.error(`   └ Reason: HTTP ${error.response.status} Status Code`);
+               console.error("   └ Response Body:", error.response.data);
+           } else if (error.request) {
+               console.error("   └ Reason: Connection refused / Unreachable network host. Check if port 3001 is open.");
+           } else {
+               console.error(`   └ Reason: ${error.message}`);
+           }
+   
+           return { 
+               success: false, 
+               error: 'Failed to send point notification', 
+               details: error.response?.data || error.message 
+           };
+       } finally {
+           console.log("--- [END] Point Notification Process Completed ---\n");
+       }
+}
+
+
+
 router.get('/points/transactions/:phone', async (req, res) => {
     const rawPhone = req.params.phone;
     if (!rawPhone) return res.status(400).json({ error: 'Phone number is required' });
@@ -131,11 +193,13 @@ router.post('/points/add', authenticateFirebaseToken, async (req, res) => {
         }
 
         // ---- Resolve merchant_id (UUID) from rielpoint_staffs ----
-        const staffLinks = await client.query(
-            `SELECT id, merchant_id FROM rielpoint_staffs
-             WHERE staff_id = $1 AND is_active = true`,
-            [req.user.id]
-        );
+       const staffLinks = await client.query(
+                `SELECT s.id, s.merchant_id, m.name AS merchant_name
+                FROM rielpoint_staffs s
+                JOIN rielpoint_merchants m ON m.id = s.merchant_id
+                WHERE s.staff_id = $1 AND s.is_active = true`,
+                [req.user.id]
+            );
 
         console.log("Staff links found for user:", staffLinks.rows);
 
@@ -146,8 +210,9 @@ router.post('/points/add', authenticateFirebaseToken, async (req, res) => {
             return res.status(409).json({ message: 'Staff is linked to multiple active merchants.' });
         }
 
-        const merchantId = staffLinks.rows[0].merchant_id;
+      const merchantId = staffLinks.rows[0].merchant_id;
         const staffId = staffLinks.rows[0].id;
+        const merchantName = staffLinks.rows[0].merchant_name;
         console.log("Staff Links", staffLinks.rows);
       
         console.log("staffId", staffId, "is linked to merchantId:", merchantId);
@@ -200,6 +265,10 @@ router.post('/points/add', authenticateFirebaseToken, async (req, res) => {
         );
 
         await client.query('COMMIT');
+
+        sendPointsNotification(phone, points, merchantName).catch(err => {
+            console.error('Notification send failed (non-fatal):', err);
+        });
 
         return res.status(200).json({
             transactionId: txResult.rows[0].id,

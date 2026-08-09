@@ -9,6 +9,8 @@ const jwt = require('jsonwebtoken');
 const RESET_TOKEN_SECRET = process.env.OTP_ENCRYPTION_KEY;
 
 
+
+
 async function sendOTPWithServiceAPI(phoneNumber, otp, fullName, requestNumber = 1) {
     console.log("\n--- [START] Sending OTP via External Service ---");
     console.log(`[Details] Phone: ${phoneNumber} | OTP: ${otp} | Name: ${fullName} | Attempt: ${requestNumber}`);
