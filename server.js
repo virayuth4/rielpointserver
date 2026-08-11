@@ -81,6 +81,8 @@ app.use('/api', userRoutes)
 app.use('/api/merchant', merchantPointRoutes)
 app.use('/api/merchant', merchantRoutes)
 app.use ('/api/merchant', require('./api/merchant/couponRoutes'))
+app.use('/api/merchant', require('./api/merchant/rewardRoutes'))
+app.use('/api/merchant', require('./api/merchant/affiliantRoutes'))
 
 
 
