@@ -100,21 +100,40 @@ router.post('/merchant/create', authenticateFirebaseToken, async (req, res) => {
   }
 });
 
+async function resolveMerchant(zingoPool, userId, requestedMerchantId) {
+  const allMerchants = await zingoPool.query(
+    'SELECT * FROM rielpoint_merchants WHERE owner_id = $1 ORDER BY id',
+    [userId]
+  );
+
+  if (allMerchants.rows.length === 0) return { merchant: null, locations: [] };
+
+  const locations = allMerchants.rows.map(m => ({
+    id: m.id,
+    name: m.name,
+    slug: m.slug,
+    status: m.status,
+  }));
+
+  const merchant = requestedMerchantId
+    ? allMerchants.rows.find(m => String(m.id) === String(requestedMerchantId))
+    : allMerchants.rows[0];
+
+  return { merchant: merchant ?? null, locations };
+}
+
 router.get('/dashboard', authenticateFirebaseToken, async (req, res) => {
   try {
-    const userId = req.user.id; // set by authenticateFirebaseToken
+    const userId = req.user.id; 
+    const { merchant_id } = req.query;
 
     // 1. Find the merchant owned by this user, pulling everything for the client
-    const merchantResult = await zingoPool.query(
-      'SELECT * FROM rielpoint_merchants WHERE owner_id = $1',
-      [userId]
-    );
-
-    if (merchantResult.rows.length === 0) {
+  const { merchant, locations } = await resolveMerchant(zingoPool, userId, merchant_id);
+     if (!merchant) {
       return res.status(404).json({ error: 'Merchant not found for this user' });
     }
 
-    const merchant = merchantResult.rows[0];
+  
 
     // 2. Pull all staff for that merchant
     const staffResult = await zingoPool.query(
@@ -170,6 +189,7 @@ const couponClaimsResult = await zingoPool.query(
     // console.log("Point Transaction Result:", pointTransactionResult.rows);
     res.json({
       merchant,
+      locations,
       staffs: staffResult.rows,
       coupons: couponsResult.rows,
       couponClaims: couponClaimsResult.rows,
@@ -185,6 +205,7 @@ router.post('/staff/status/:rowId', authenticateFirebaseToken, async (req, res) 
   const { rowId } = req.params;
   const { is_active } = req.body;
   const userId = req.user?.id;
+ 
 
   if (typeof is_active !== 'boolean') {
     return res.status(400).json({ error: 'is_active must be a boolean.' });
@@ -224,8 +245,9 @@ router.post('/staff/status/:rowId', authenticateFirebaseToken, async (req, res) 
     return res.status(500).json({ error: 'Failed to update staff status.' });
   }
 });
+
 router.post('/staff/add', authenticateFirebaseToken, async (req, res) => {
-  const { staff_phone } = req.body;
+  const { staff_phone, merchant_id } = req.body;
   const userId = req.user?.id;
 
   if (!staff_phone || !staff_phone.trim()) {
@@ -233,13 +255,14 @@ router.post('/staff/add', authenticateFirebaseToken, async (req, res) => {
   }
 
   try {
-   const merchantResult = await zingoPool.query(
-      `SELECT rielpoint_merchants.id
-      FROM rielpoint_merchants
-      JOIN rielpoint_users ON rielpoint_users.id = rielpoint_merchants.owner_id
-      WHERE rielpoint_merchants.owner_id = $1
-        AND rielpoint_users.role = 'owner'`,
-      [userId]
+    // Verify the requested merchant_id belongs to this owner
+    const merchantResult = await zingoPool.query(
+      `SELECT id FROM rielpoint_merchants
+       WHERE owner_id = $1
+         AND ($2::uuid IS NULL OR id = $2::uuid)
+       ORDER BY id
+       LIMIT 1`,
+      [userId, merchant_id ?? null]
     );
 
     if (merchantResult.rows.length === 0) {
@@ -249,7 +272,7 @@ router.post('/staff/add', authenticateFirebaseToken, async (req, res) => {
     const merchantId = merchantResult.rows[0].id;
 
     const staffIdResult = await zingoPool.query(
-      `SELECT id, name FROM rielpoint_users WHERE phone_number = $1`,
+      `SELECT id, fullname FROM rielpoint_users WHERE phone_number = $1`,
       [staff_phone.trim()]
     );
 
@@ -258,7 +281,7 @@ router.post('/staff/add', authenticateFirebaseToken, async (req, res) => {
     }
 
     const staffId = staffIdResult.rows[0].id;
-    const staffName = staffIdResult.rows[0].name;
+    const staffName = staffIdResult.rows[0].fullname; // was `.name` — bug, column is fullname
 
     const addStaffResult = await zingoPool.query(
       `INSERT INTO rielpoint_staffs (merchant_id, staff_id, is_active, created_at)
