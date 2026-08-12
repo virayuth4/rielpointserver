@@ -43,35 +43,37 @@ router.get('/affiliate/merchants', async (req, res) => {
 
 
 
-
 router.post("/affiliate/click", async (req, res) => {
-  console.log("Affliate Click Route hit")
   const { merchant_id, offer_id, ip_address, user_agent } = req.body;
-  const userId = req.user?.id ?? null; // from your auth middleware, nullable
+  const userId = req.user?.id ?? null;
 
   const merchant = await zingoPool.query(
     `SELECT tracking_url FROM affiliate_merchants WHERE id = $1 AND is_active = TRUE`,
     [merchant_id]
   );
-  console.log("Merchant", merchant.rows)
-  if (!merchant.rows[0]) return res.status(404).json({ error: "not found" });
+  if (!merchant.rows[0]?.tracking_url) {
+    return res.status(422).json({ error: "Merchant has no tracking URL configured" });
+  }
 
-  const click = await zingoPool.query(
+  const trackingUrl = merchant.rows[0].tracking_url;
+  console.log("tracking Url", trackingUrl)
+
+  // Generate click_id ourselves first, so we can build the final URL before inserting
+  const clickIdResult = await zingoPool.query(`SELECT gen_random_uuid() AS id`);
+  const clickId = clickIdResult.rows[0].id;
+
+  const destinationUrl = trackingUrl.replace("{click_id}", clickId);
+  console.log("Destination Url", destinationUrl)
+
+  await zingoPool.query(
     `INSERT INTO affiliate_clicks
-       (user_id, merchant_id, offer_id, destination_url, ip_address, user_agent)
-     VALUES ($1,$2,$3,$4,$5,$6)
-     RETURNING click_id`,
-    [userId, merchant_id, offer_id, merchant.rows[0].tracking_url, ip_address, user_agent]
+       (click_id, user_id, merchant_id, offer_id, destination_url, ip_address, user_agent)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [clickId, userId, merchant_id, offer_id, destinationUrl, ip_address, user_agent]
   );
 
-  const destination_url = merchant.rows[0].tracking_url.replace(
-    "{click_id}",
-    click.rows[0].click_id
-  );
-
-  res.json({ data: { destination_url } });
+  res.json({ data: { destination_url: destinationUrl } });
 });
-
 
 
 
