@@ -5,10 +5,12 @@ const axios = require("axios");
 const router = express.Router();
 const authenticateFirebaseToken = require('../../auth/authFirebaseToken');
 const { normalizePhoneNumber } = require("../../lib/normalizePhoneNumber");
-const crypto = require('crypto');
+const {crypto, randomUUID} = require('crypto');
 const {upload, uploadFileToS3, deleteFileFromS3, uploadMediaFilesToS3} = require("../../database/s3")
 const multer = require('multer');
 const { sanitizeProductDescription } = require("../../utils/sanatizeHtml");
+const optionalFirebaseAuth = require("../../auth/optionalAuthenticateFirebaseToken");
+
 
 
 
@@ -42,40 +44,43 @@ router.get('/affiliate/merchants', async (req, res) => {
 
 
 
+router.post("/affiliate/click", optionalFirebaseAuth, async (req, res) => {
+  try {
+    const { merchant_id, offer_id, ip_address, user_agent } = req.body;
+    const userId = req.user?.id ?? null;
+    // console.log("user Id:", userId)
 
-router.post("/affiliate/click", async (req, res) => {
-  const { merchant_id, offer_id, ip_address, user_agent } = req.body;
-  const userId = req.user?.id ?? null;
+    if (!merchant_id) {
+      return res.status(400).json({ error: "merchant_id is required" });
+    }
 
-  const merchant = await zingoPool.query(
-    `SELECT tracking_url FROM affiliate_merchants WHERE id = $1 AND is_active = TRUE`,
-    [merchant_id]
-  );
-  if (!merchant.rows[0]?.tracking_url) {
-    return res.status(422).json({ error: "Merchant has no tracking URL configured" });
+    const clickId = randomUUID();
+
+    const result = await zingoPool.query(
+      `WITH merchant AS (
+         SELECT tracking_url FROM affiliate_merchants
+         WHERE id = $1 AND is_active = TRUE
+       )
+       INSERT INTO affiliate_clicks
+         (click_id, user_id, merchant_id, offer_id, destination_url, ip_address, user_agent)
+       SELECT $2::uuid, $3, $1, $4,
+              replace(merchant.tracking_url, '{click_id}', $2::text),
+              $5, $6
+       FROM merchant
+       RETURNING destination_url`,
+      [merchant_id, clickId, userId, offer_id ?? null, ip_address, user_agent]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(422).json({ error: "Merchant has no tracking URL configured" });
+    }
+
+    return res.json({ data: { destination_url: result.rows[0].destination_url } });
+  } catch (err) {
+    console.error("affiliate click error:", err);
+    return res.status(500).json({ error: "Failed to log click" });
   }
-
-  const trackingUrl = merchant.rows[0].tracking_url;
-  console.log("tracking Url", trackingUrl)
-
-  // Generate click_id ourselves first, so we can build the final URL before inserting
-  const clickIdResult = await zingoPool.query(`SELECT gen_random_uuid() AS id`);
-  const clickId = clickIdResult.rows[0].id;
-
-  const destinationUrl = trackingUrl.replace("{click_id}", clickId);
-  console.log("Destination Url", destinationUrl)
-
-  await zingoPool.query(
-    `INSERT INTO affiliate_clicks
-       (click_id, user_id, merchant_id, offer_id, destination_url, ip_address, user_agent)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [clickId, userId, merchant_id, offer_id, destinationUrl, ip_address, user_agent]
-  );
-
-  res.json({ data: { destination_url: destinationUrl } });
 });
-
-
 
 
 
