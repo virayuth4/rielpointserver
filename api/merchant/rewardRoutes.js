@@ -11,16 +11,16 @@ const multer = require('multer');
 const { sanitizeProductDescription } = require("../../utils/sanatizeHtml");
 
 
-router.get('/rewards', authenticateFirebaseToken, async (req, res) => {
+router.get('/rewards',  async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId;
 
     const result = await zingoPool.query(
       `SELECT *
        FROM "rielpoint_rewards"
-       WHERE posted_by = $1
-       ORDER BY id DESC`,
-      [userId]
+ 
+       `,
+      []
     );
 
     return res.status(200).json({ data: result.rows });

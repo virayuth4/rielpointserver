@@ -11,6 +11,8 @@ const multer = require('multer');
 const { sanitizeProductDescription } = require("../../utils/sanatizeHtml");
 
 
+
+
 router.get('/affiliate/merchants', async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId;
@@ -41,7 +43,34 @@ router.get('/affiliate/merchants', async (req, res) => {
 
 
 
-router.get('')
+
+router.post("/affiliate/click", async (req, res) => {
+  console.log("Affliate Click Route hit")
+  const { merchant_id, offer_id, ip_address, user_agent } = req.body;
+  const userId = req.user?.id ?? null; // from your auth middleware, nullable
+
+  const merchant = await zingoPool.query(
+    `SELECT tracking_url FROM affiliate_merchants WHERE id = $1 AND is_active = TRUE`,
+    [merchant_id]
+  );
+  console.log("Merchant", merchant.rows)
+  if (!merchant.rows[0]) return res.status(404).json({ error: "not found" });
+
+  const click = await zingoPool.query(
+    `INSERT INTO affiliate_clicks
+       (user_id, merchant_id, offer_id, destination_url, ip_address, user_agent)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     RETURNING click_id`,
+    [userId, merchant_id, offer_id, merchant.rows[0].tracking_url, ip_address, user_agent]
+  );
+
+  const destination_url = merchant.rows[0].tracking_url.replace(
+    "{click_id}",
+    click.rows[0].click_id
+  );
+
+  res.json({ data: { destination_url } });
+});
 
 
 
