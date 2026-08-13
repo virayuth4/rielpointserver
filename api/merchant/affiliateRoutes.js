@@ -69,24 +69,28 @@ router.post("/affiliate/click", optionalFirebaseAuth, async (req, res) => {
 
     const clickId = randomUUID();
 
-    const result = await zingoPool.query(
+      const result = await zingoPool.query(
       `WITH merchant AS (
-         SELECT id, tracking_url FROM affiliate_merchants
-         WHERE id = $1 AND is_active = TRUE
-       ),
-       target AS (
-         SELECT COALESCE(o.redirect_url, m.tracking_url) AS raw_url
-         FROM merchant m
-         LEFT JOIN affiliate_offers o
-           ON o.id = $4 AND o.merchant_id = m.id
-       )
-       INSERT INTO affiliate_clicks
-         (click_id, user_id, merchant_id, offer_id, destination_url, ip_address, user_agent)
-       SELECT $2::uuid, $3, $1, $4,
-              replace(target.raw_url, '{click_id}', $2::text),
-              $5, $6
-       FROM merchant, target
-       RETURNING destination_url`,
+  SELECT id, tracking_url, name, logo_url FROM affiliate_merchants
+  WHERE id = $1 AND is_active = TRUE
+),
+target AS (
+  SELECT COALESCE(o.redirect_url, m.tracking_url) AS raw_url,
+         m.name AS merchant_name,
+         m.logo_url AS merchant_logo_url
+  FROM merchant m
+  LEFT JOIN affiliate_offers o
+    ON o.id = $4 AND o.merchant_id = m.id
+)
+INSERT INTO affiliate_clicks
+  (click_id, user_id, merchant_id, offer_id, destination_url, ip_address, user_agent)
+SELECT $2::uuid, $3, $1, $4,
+       replace(target.raw_url, '{click_id}', $2::text),
+       $5, $6
+FROM target
+RETURNING destination_url,
+          (SELECT merchant_name FROM target) AS merchant_name,
+          (SELECT merchant_logo_url FROM target) AS merchant_logo_url`,
       [merchant_id, clickId, userId, offer_id ?? null, ip_address, user_agent]
     );
 
@@ -94,13 +98,19 @@ router.post("/affiliate/click", optionalFirebaseAuth, async (req, res) => {
       return res.status(422).json({ error: "Merchant has no tracking URL configured, or offer/merchant not found" });
     }
 
-    const destinationUrl = result.rows[0].destination_url;
+    const { destination_url, merchant_name, merchant_logo_url } = result.rows[0];
 
-    if (!destinationUrl) {
+    if (!destination_url) {
       return res.status(422).json({ error: "No destination URL available for this offer/merchant" });
     }
 
-    return res.json({ data: { destination_url: destinationUrl } });
+    return res.json({
+      data: {
+        destination_url,
+        merchant_name,
+        merchant_logo_url,
+      },
+    });
   } catch (err) {
     console.error("affiliate click error:", err);
     return res.status(500).json({ error: "Failed to log click" });
