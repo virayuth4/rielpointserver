@@ -58,6 +58,7 @@ router.get('/affiliate/homepage-feed', async (req, res) => {
             WHEN LOWER(ao.description) LIKE '%shanghai%' THEN 'Hotels - Shanghai, China'
             WHEN LOWER(ao.description) LIKE '%jakarta%' THEN 'Hotels - Jakarta, Indonesia'
             WHEN LOWER(ao.description) LIKE '%hanoi%' THEN 'Hotels - Hanoi, Vietnam'
+            WHEN LOWER(ao.description) LIKE '%minh%' THEN 'Hotels - Ho Chi Minh, Vietnam'
             ELSE 'Hotels - Other'
           END
         ELSE INITCAP(TRIM(COALESCE(ao.category, 'Other')))
