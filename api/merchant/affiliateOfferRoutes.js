@@ -1,6 +1,7 @@
 const express = require("express");
 const zingoPool = require("../../database/pgZingo");
 const { admin, auth } = require('../../auth/firebase-admin');
+const NodeCache = require("node-cache");
 const axios = require("axios");
 const router = express.Router();
 const authenticateFirebaseToken = require('../../auth/authFirebaseToken');
@@ -9,6 +10,9 @@ const crypto = require('crypto');
 const { upload, uploadFileToS3, deleteFileFromS3, uploadMediaFilesToS3 } = require("../../database/s3");
 const multer = require('multer');
 const { sanitizeProductDescription } = require("../../utils/sanatizeHtml");
+const { invalidateFeedCache } = require("../../utils/feedCacheService");
+
+
 
 const CASHBACK_TYPES = ["percentage", "fixed"];
 
@@ -329,6 +333,8 @@ router.post('/offers/add',
         const result = await zingoPool.query(query, values);
         const offerId = result.rows[0].id;
 
+
+        invalidateFeedCache();
         return res.status(200).json({
           message: 'Offer posted successfully',
           data: { offerId, imageUrls },

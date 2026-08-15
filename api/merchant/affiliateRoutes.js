@@ -1,5 +1,6 @@
 const express = require("express");
 const zingoPool = require("../../database/pgZingo");
+const NodeCache = require("node-cache");
 const { admin, auth } = require('../../auth/firebase-admin');
 const axios = require("axios");
 const router = express.Router();
@@ -10,6 +11,8 @@ const {upload, uploadFileToS3, deleteFileFromS3, uploadMediaFilesToS3} = require
 const multer = require('multer');
 const { sanitizeProductDescription } = require("../../utils/sanatizeHtml");
 const optionalFirebaseAuth = require("../../auth/optionalAuthenticateFirebaseToken");
+const { getCachedFeed, setCachedFeed } = require("../../utils/feedCacheService");
+
 
 
 router.get('/affiliate/offers/:merchantId', async (req, res) => {
@@ -29,11 +32,26 @@ router.get('/affiliate/offers/:merchantId', async (req, res) => {
   }
 });
 
+
+
 // GET /api/merchant/affiliate/homepage-feed
 router.get('/affiliate/homepage-feed', async (req, res) => {
   try {
     const { category, page = 1, limit = 8 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const parsedLimit = parseInt(limit, 10);
+    const parsedPage = parseInt(page, 10);
+    const offset = (parsedPage - 1) * parsedLimit;
+
+    // Cache key
+    const cacheKey = `feed:${category || 'initial'}:p${parsedPage}:l${parsedLimit}`;
+    const cachedResponse = getCachedFeed(cacheKey);
+    
+    if (cachedResponse) {
+      console.log(`[CACHE HIT] Serving from memory for key: ${cacheKey}`);
+      return res.status(200).json(cachedResponse);
+    }
+
+    console.log(`[CACHE MISS] Fetching from DB & calculating for key: ${cacheKey}`);
 
     const PREFERRED_ORDER = [
       'Flights',
@@ -43,129 +61,135 @@ router.get('/affiliate/homepage-feed', async (req, res) => {
       'Hotels - Siem Reap'
     ];
 
-    // Category mapping expression
-    const categoryMappingSQL = `
-      CASE 
-        WHEN LOWER(TRIM(ao.category)) = 'travel' THEN 'Flights'
-        WHEN LOWER(TRIM(ao.category)) = 'hotels' THEN
-          CASE
-            WHEN LOWER(ao.description) LIKE '%singapore%' THEN 'Hotels - Singapore'
-            WHEN LOWER(ao.description) LIKE '%malaysia%' OR LOWER(ao.description) LIKE '%kuala%' THEN 'Hotels - Malaysia'
-            WHEN LOWER(ao.description) LIKE '%siem reap%' THEN 'Hotels - Siem Reap'
-            WHEN LOWER(ao.description) LIKE '%phnom penh%' THEN 'Hotels - Phnom Penh'
-            WHEN LOWER(ao.description) LIKE '%tokyo%' THEN 'Hotels - Tokyo, Japan'
-            WHEN LOWER(ao.description) LIKE '%seoul%' THEN 'Hotels - Seoul, Korea'
-            WHEN LOWER(ao.description) LIKE '%shanghai%' THEN 'Hotels - Shanghai, China'
-            WHEN LOWER(ao.description) LIKE '%jakarta%' THEN 'Hotels - Jakarta, Indonesia'
-            WHEN LOWER(ao.description) LIKE '%hanoi%' THEN 'Hotels - Hanoi, Vietnam'
-            WHEN LOWER(ao.description) LIKE '%minh%' THEN 'Hotels - Ho Chi Minh, Vietnam'
-            ELSE 'Hotels - Other'
-          END
-        ELSE INITCAP(TRIM(COALESCE(ao.category, 'Other')))
-      END
-    `;
+    // Helper to resolve category dynamically in JS
+    const resolveCategory = (rawCategory, description = '') => {
+      const cat = (rawCategory || '').trim().toLowerCase();
+      const desc = (description || '').toLowerCase();
 
-    // SCENARIO A: Clicking "Load More" for a specific category
-   if (category) {
-      const paginatedQuery = `
-        WITH mapped_offers AS (
-          SELECT 
-            ao.*,
-            to_jsonb(am.*) AS merchant,
-            ${categoryMappingSQL} AS resolved_category
-          FROM "affiliate_offers" ao
-          JOIN "affiliate_merchants" am ON am.id = ao.merchant_id
-          WHERE ao.is_active = true AND am.is_active = true
-        )
-        SELECT 
-          to_jsonb(mo) - 'merchant' - 'resolved_category' AS offer,
-          mo.merchant
-        FROM mapped_offers mo
-        WHERE mo.resolved_category = $1
-        ORDER BY 
-          CASE WHEN LOWER(mo.description) LIKE '%main%' THEN 0 ELSE 1 END,
-          mo.created_at DESC
-        LIMIT $2 OFFSET $3;
-      `;
+      if (cat === 'travel') return 'Flights';
+      if (cat === 'hotels') {
+        if (desc.includes('singapore')) return 'Hotels - Singapore';
+        if (desc.includes('malaysia') || desc.includes('kuala')) return 'Hotels - Malaysia';
+        if (desc.includes('siem reap')) return 'Hotels - Siem Reap';
+        if (desc.includes('phnom penh')) return 'Hotels - Phnom Penh';
+        if (desc.includes('tokyo')) return 'Hotels - Tokyo, Japan';
+        if (desc.includes('seoul')) return 'Hotels - Seoul, Korea';
+        if (desc.includes('shanghai')) return 'Hotels - Shanghai, China';
+        if (desc.includes('jakarta')) return 'Hotels - Jakarta, Indonesia';
+        if (desc.includes('hanoi')) return 'Hotels - Hanoi, Vietnam';
+        if (desc.includes('minh')) return 'Hotels - Ho Chi Minh, Vietnam';
+        return 'Hotels - Other';
+      }
 
-      const result = await zingoPool.query(paginatedQuery, [category, limit, offset]);
+      if (!rawCategory) return 'Other';
+      return rawCategory.charAt(0).toUpperCase() + rawCategory.slice(1).toLowerCase();
+    };
 
-      return res.status(200).json({
-        category,
-        offers: result.rows.map((row) => ({
-          offer: {
-            ...row.offer,
-            category // Ensure category name matches the resolved group
-          },
-          merchant: row.merchant
-        })),
-        hasMore: result.rows.length === parseInt(limit)
-      });
-    }
+    // Helper to sort offers: descriptions with 'main' come first, then newest
+    const sortOffers = (a, b) => {
+      const aMain = (a.description || '').toLowerCase().includes('main') ? 0 : 1;
+      const bMain = (b.description || '').toLowerCase().includes('main') ? 0 : 1;
+      if (aMain !== bMain) return aMain - bMain;
+      return new Date(b.created_at) - new Date(a.created_at);
+    };
 
-    // SCENARIO B: Initial homepage load (Top 8 per category + counts)
-    const initialQuery = `
-      WITH ranked_offers AS (
+    // -------------------------------------------------------------
+    // SCENARIO A: Load More for a specific category
+    // -------------------------------------------------------------
+    if (category) {
+      const query = `
         SELECT 
           ao.*,
-          to_jsonb(am.*) AS merchant,
-          ${categoryMappingSQL} AS resolved_category,
-          ROW_NUMBER() OVER (
-            PARTITION BY ${categoryMappingSQL}
-            ORDER BY 
-              CASE WHEN LOWER(ao.description) LIKE '%main%' THEN 0 ELSE 1 END,
-              ao.created_at DESC
-          ) AS rank_in_cat,
-          COUNT(*) OVER (
-            PARTITION BY ${categoryMappingSQL}
-          ) AS total_in_cat
-        FROM "affiliate_offers" ao
-        JOIN "affiliate_merchants" am ON am.id = ao.merchant_id
+          to_jsonb(am.*) AS merchant
+        FROM affiliate_offers ao
+        JOIN affiliate_merchants am ON am.id = ao.merchant_id
         WHERE ao.is_active = true AND am.is_active = true
-      ),
-      grouped_categories AS (
+      `;
+      const result = await zingoPool.query(query);
+
+      // Filter and group in JS
+      const filteredOffers = result.rows
+        .filter((row) => resolveCategory(row.category, row.description) === category)
+        .sort(sortOffers);
+
+      const paginatedOffers = filteredOffers.slice(offset, offset + parsedLimit);
+
+      const responsePayload = {
+        category,
+        offers: paginatedOffers.map((row) => {
+          const { merchant, ...offerData } = row;
+          return {
+            offer: {
+              ...offerData,
+              category
+            },
+            merchant
+          };
+        }),
+        hasMore: offset + parsedLimit < filteredOffers.length
+      };
+
+      setCachedFeed(cacheKey, responsePayload);
+      console.log(`[CACHE SET] Cached response for key: ${cacheKey}`);
+      return res.status(200).json(responsePayload);
+    }
+
+    // -------------------------------------------------------------
+    // SCENARIO B: Initial homepage load
+    // -------------------------------------------------------------
+    const [offersResult, merchantsResult] = await Promise.all([
+      zingoPool.query(`
         SELECT 
-          resolved_category AS category,
-          json_agg(
-            json_build_object(
-              'offer', to_jsonb(ro) - 'merchant' - 'rank_in_cat' - 'resolved_category' - 'total_in_cat',
-              'merchant', ro.merchant
-            )
-            ORDER BY ro.rank_in_cat ASC
-          ) AS items,
-          MAX(ro.total_in_cat) AS total_count
-        FROM ranked_offers ro
-        WHERE ro.rank_in_cat <= ${limit}
-        GROUP BY resolved_category
-      ),
-      no_offer_merchants AS (
-        SELECT json_agg(to_jsonb(am.*)) AS merchants
-        FROM "affiliate_merchants" am
+          ao.*,
+          to_jsonb(am.*) AS merchant
+        FROM affiliate_offers ao
+        JOIN affiliate_merchants am ON am.id = ao.merchant_id
+        WHERE ao.is_active = true AND am.is_active = true
+      `),
+      zingoPool.query(`
+        SELECT am.*
+        FROM affiliate_merchants am
         WHERE am.is_active = true
           AND NOT EXISTS (
-            SELECT 1 FROM "affiliate_offers" ao 
+            SELECT 1 FROM affiliate_offers ao 
             WHERE ao.merchant_id = am.id AND ao.is_active = true
           )
-      )
-      SELECT 
-        (
-          SELECT json_object_agg(
-            gc.category, 
-            json_build_object(
-              'items', gc.items, 
-              'hasMore', (gc.total_count > ${limit})
-            )
-          ) 
-          FROM grouped_categories gc
-        ) AS categories,
-        (SELECT COALESCE(merchants, '[]'::json) FROM no_offer_merchants) AS merchants_without_offers;
-    `;
+      `)
+    ]);
 
-    const result = await zingoPool.query(initialQuery);
-    const row = result.rows[0] || {};
-    const categoriesMap = row.categories || {};
+    // Group offers by resolved category
+    const categoryBuckets = {};
+
+    offersResult.rows.forEach((row) => {
+      const resolvedCat = resolveCategory(row.category, row.description);
+      if (!categoryBuckets[resolvedCat]) {
+        categoryBuckets[resolvedCat] = [];
+      }
+      categoryBuckets[resolvedCat].push(row);
+    });
+
+    const categoriesMap = {};
+    Object.keys(categoryBuckets).forEach((catName) => {
+      const sorted = categoryBuckets[catName].sort(sortOffers);
+      const items = sorted.slice(0, parsedLimit).map((row) => {
+        const { merchant, ...offerData } = row;
+        return {
+          offer: {
+            ...offerData,
+            category: catName
+          },
+          merchant
+        };
+      });
+
+      categoriesMap[catName] = {
+        items,
+        hasMore: sorted.length > parsedLimit
+      };
+    });
+
+    // Apply preferred ordering
     const allCategories = Object.keys(categoriesMap);
-
     const orderedKeys = [
       ...PREFERRED_ORDER.filter((c) => allCategories.includes(c)),
       ...allCategories
@@ -178,12 +202,16 @@ router.get('/affiliate/homepage-feed', async (req, res) => {
       orderedCategories[key] = categoriesMap[key];
     });
 
-    return res.status(200).json({
+    const responsePayload = {
       data: {
         categories: orderedCategories,
-        merchantsWithoutOffers: row.merchants_without_offers || []
+        merchantsWithoutOffers: merchantsResult.rows || []
       }
-    });
+    };
+
+    setCachedFeed(cacheKey, responsePayload);
+    return res.status(200).json(responsePayload);
+
   } catch (error) {
     console.error('Error fetching homepage feed:', error);
     return res.status(500).json({ error: 'Failed to fetch homepage feed.' });
