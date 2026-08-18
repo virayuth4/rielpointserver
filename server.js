@@ -84,6 +84,7 @@ app.use ('/api/merchant', require('./api/merchant/couponRoutes'))
 app.use('/api/merchant', require('./api/merchant/rewardRoutes'))
 app.use('/api/merchant', require('./api/merchant/affiliateRoutes'))
 app.use('/api/merchant', require('./api/merchant/affiliateOfferRoutes'))
+app.use('/api/merchant', require('./api/admin/cashBackRoutes'))
 
 
 
@@ -91,7 +92,13 @@ async function startServer() {
   const PORT = 9000
   const isProductionTest = config.isProductionTest?.() || false;
 
-
+function localhostOnly(req, res, next) {
+  const ip = req.socket.remoteAddress;
+  if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') {
+    return next();
+  }
+  res.status(404).end(); // pretend it doesn't exist
+}
 
   console.log('\n🚀 Starting server...');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');

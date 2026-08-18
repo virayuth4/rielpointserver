@@ -347,4 +347,288 @@ router.post('/offers/add',
   }
 );
 
+function validateMerchantPayload(body) {
+  const { name, slug, tracked_cashback, confirmed_cashback, website_url, tracking_url } = body;
+ 
+  if (!name || !name.trim()) {
+    return 'Name is required.';
+  }
+  if (!slug || !slug.trim()) {
+    return 'Slug is required.';
+  }
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug.trim())) {
+    return 'Slug may only contain lowercase letters, numbers, and hyphens.';
+  }
+  if (!tracking_url || !tracking_url.trim()) {
+    return 'Tracking URL is required.';
+  }
+  if (website_url && !/^https?:\/\//i.test(website_url.trim())) {
+    return 'Website URL must start with http:// or https://.';
+  }
+  if (!/^https?:\/\//i.test(tracking_url.trim())) {
+    return 'Tracking URL must start with http:// or https://.';
+  }
+ 
+  
+ 
+  return null;
+}
+ 
+async function isSlugTaken(slug, excludeId = null) {
+  const query = excludeId
+    ? `SELECT 1 FROM "affiliate_merchants" WHERE "slug" = $1 AND "id" != $2`
+    : `SELECT 1 FROM "affiliate_merchants" WHERE "slug" = $1`;
+  const values = excludeId ? [slug, excludeId] : [slug];
+  const result = await zingoPool.query(query, values);
+  return result.rowCount > 0;
+}
+
+router.post('/affiliate-merchants/add',
+  authenticateFirebaseToken,
+  (req, res) => {
+    upload.fields([{ name: 'logo', maxCount: 1 }])(req, res, async (err) => {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({ error: 'File size is too large. Maximum size is 50MB.' });
+        }
+        return res.status(400).json({ error: err.message });
+      } else if (err) {
+        return res.status(400).json({ error: err.message });
+      }
+      console.log("affiliate merchant add route hit")
+ 
+      try {
+        const {
+          name,
+          website_url,
+          affiliate_network,
+          affiliate_merchant_id,
+          tracking_url,
+          is_active,
+          tracked_cashback,
+          confirmed_cashback,
+          exclusions,
+          refunds,
+          terms,
+        } = req.body;
+ 
+        const slug = (req.body.slug || '').trim().toLowerCase();
+        const general_description = sanitizeProductDescription(req.body.general_description || '');
+ 
+        const validationError = validateMerchantPayload({ ...req.body, slug });
+        if (validationError) {
+          return res.status(400).json({ error: validationError });
+        }
+ 
+        if (await isSlugTaken(slug)) {
+          return res.status(400).json({ error: 'That slug is already in use by another merchant.' });
+        }
+ 
+        const logoFile = req.files?.['logo']?.[0];
+        let logoUrl = null;
+        if (logoFile) {
+          const uploaded = await uploadMediaFilesToS3([logoFile], slug, 'image', {
+            pathPrefix: 'affiliate/merchants',
+          });
+          logoUrl = uploaded[0] || null;
+        }
+ 
+        const query = `
+          INSERT INTO "affiliate_merchants" (
+            "name", "slug", "logo_url", "website_url", "affiliate_network",
+            "affiliate_merchant_id", "tracking_url", "is_active", "tracked_cashback",
+            "confirmed_cashback", "exclusions", "refunds", "terms", "general_description"
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          RETURNING id
+        `;
+        const values = [
+          name.trim(),
+          slug,
+          logoUrl,
+          website_url ? website_url.trim() : null,
+          affiliate_network ? affiliate_network.trim() : null,
+          affiliate_merchant_id ? affiliate_merchant_id.trim() : null,
+          injectClickIdMacro(tracking_url.trim()),
+          is_active !== undefined ? Boolean(is_active) : true,
+          tracked_cashback !== undefined && tracked_cashback !== '' ? parseInt(tracked_cashback, 10) : null,
+          confirmed_cashback !== undefined && confirmed_cashback !== '' ? parseInt(confirmed_cashback, 10) : null,
+          exclusions || null,
+          refunds || null,
+          terms || null,
+          general_description || null,
+        ];
+ 
+        const result = await zingoPool.query(query, values);
+        const merchantId = result.rows[0].id;
+ 
+        invalidateFeedCache();
+        return res.status(200).json({
+          message: 'Merchant created successfully',
+          data: { merchantId, logoUrl },
+        });
+      } catch (error) {
+        console.error('Error processing merchant creation:', error);
+        if (error.code === '23505') {
+          return res.status(400).json({ error: 'That slug is already in use by another merchant.' });
+        }
+        return res.status(500).json({ error: 'Failed to process merchant creation. Please try again.' });
+      }
+    });
+  }
+);
+
+router.put('/affiliate-merchants/:id',
+  authenticateFirebaseToken,
+  (req, res) => {
+    upload.fields([{ name: 'logo', maxCount: 1 }])(req, res, async (err) => {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({ error: 'File size is too large. Maximum size is 50MB.' });
+        }
+        return res.status(400).json({ error: err.message });
+      } else if (err) {
+        return res.status(400).json({ error: err.message });
+      }
+      console.log("update merchants")
+      try {
+        const { id } = req.params;
+        const {
+          name,
+          website_url,
+          affiliate_network,
+          affiliate_merchant_id,
+          tracking_url,
+          is_active,
+          tracked_cashback,
+          confirmed_cashback,
+          exclusions,
+          refunds,
+          terms,
+          existing_logo_url,
+        } = req.body;
+ 
+        const slug = (req.body.slug || '').trim().toLowerCase();
+        const general_description = sanitizeProductDescription(req.body.general_description || '');
+ 
+        const validationError = validateMerchantPayload({ ...req.body, slug });
+        if (validationError) {
+          return res.status(400).json({ error: validationError });
+        }
+ 
+        const existingResult = await zingoPool.query(
+          `SELECT "logo_url" FROM "affiliate_merchants" WHERE "id" = $1`,
+          [id]
+        );
+        if (existingResult.rowCount === 0) {
+          return res.status(404).json({ error: 'Merchant not found.' });
+        }
+ 
+        if (await isSlugTaken(slug, id)) {
+          return res.status(400).json({ error: 'That slug is already in use by another merchant.' });
+        }
+ 
+        const logoFile = req.files?.['logo']?.[0];
+        let logoUrl = existingResult.rows[0].logo_url;
+        if (logoFile) {
+          const uploaded = await uploadMediaFilesToS3([logoFile], slug, 'image', {
+            pathPrefix: 'affiliate/merchants',
+          });
+          logoUrl = uploaded[0] || null;
+        } else if (existing_logo_url !== undefined) {
+          // Client explicitly cleared the logo (sent empty string) or kept it (sent the same URL)
+          logoUrl = existing_logo_url || null;
+        }
+ 
+        const query = `
+          UPDATE "affiliate_merchants" SET
+            "name" = $1,
+            "slug" = $2,
+            "logo_url" = $3,
+            "website_url" = $4,
+            "affiliate_network" = $5,
+            "affiliate_merchant_id" = $6,
+            "tracking_url" = $7,
+            "is_active" = $8,
+            "tracked_cashback" = $9,
+            "confirmed_cashback" = $10,
+            "exclusions" = $11,
+            "refunds" = $12,
+            "terms" = $13,
+            "general_description" = $14,
+            "updated_at" = NOW()
+          WHERE "id" = $15
+          RETURNING id
+        `;
+        const values = [
+          name.trim(),
+          slug,
+          logoUrl,
+          website_url ? website_url.trim() : null,
+          affiliate_network ? affiliate_network.trim() : null,
+          affiliate_merchant_id ? affiliate_merchant_id.trim() : null,
+          injectClickIdMacro(tracking_url.trim()),
+          is_active !== undefined ? Boolean(is_active) : true,
+          tracked_cashback !== undefined && tracked_cashback !== '' ? parseInt(tracked_cashback, 10) : null,
+          confirmed_cashback !== undefined && confirmed_cashback !== '' ? parseInt(confirmed_cashback, 10) : null,
+          exclusions || null,
+          refunds || null,
+          terms || null,
+          general_description || null,
+          id,
+        ];
+ 
+        const result = await zingoPool.query(query, values);
+ 
+        invalidateFeedCache();
+        return res.status(200).json({
+          message: 'Merchant updated successfully',
+          data: { merchantId: result.rows[0].id, logoUrl },
+        });
+      } catch (error) {
+        console.error('Error processing merchant update:', error);
+        if (error.code === '23505') {
+          return res.status(400).json({ error: 'That slug is already in use by another merchant.' });
+        }
+        return res.status(500).json({ error: 'Failed to process merchant update. Please try again.' });
+      }
+    });
+  }
+);
+
+router.get('/affiliate-merchants/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await zingoPool.query(
+      `SELECT * FROM "affiliate_merchants" WHERE "id" = $1`,
+      [id]
+    );
+ 
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Merchant not found.' });
+    }
+ 
+    return res.status(200).json({ data: result.rows[0] });
+  } catch (error) {
+    console.error('Error fetching merchant:', error);
+    return res.status(500).json({ error: 'Failed to fetch merchant. Please try again.' });
+  }
+});
+
+router.get('/affiliate-merchants',  async (req, res) => {
+  try {
+    const result = await zingoPool.query(
+      `SELECT "id", "name", "slug", "logo_url", "website_url", "affiliate_network",
+              "affiliate_merchant_id", "tracking_url", "is_active", "tracked_cashback",
+              "confirmed_cashback", "created_at", "updated_at"
+       FROM "affiliate_merchants"
+       ORDER BY "name" ASC`
+    );
+    return res.status(200).json({ data: result.rows });
+  } catch (error) {
+    console.error('Error fetching merchants:', error);
+    return res.status(500).json({ error: 'Failed to fetch merchants. Please try again.' });
+  }
+});
+
 module.exports = router;

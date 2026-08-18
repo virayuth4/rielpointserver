@@ -45,7 +45,7 @@ router.get('/affiliate/homepage-feed', async (req, res) => {
     // Cache key
     const cacheKey = `feed:${category || 'initial'}:p${parsedPage}:l${parsedLimit}`;
     const cachedResponse = getCachedFeed(cacheKey);
-    
+
     if (cachedResponse) {
       console.log(`[CACHE HIT] Serving from memory for key: ${cacheKey}`);
       return res.status(200).json(cachedResponse);
@@ -107,7 +107,6 @@ router.get('/affiliate/homepage-feed', async (req, res) => {
       `;
       const result = await zingoPool.query(query);
 
-      // Filter and group in JS
       const filteredOffers = result.rows
         .filter((row) => resolveCategory(row.category, row.description) === category)
         .sort(sortOffers);
@@ -136,38 +135,46 @@ router.get('/affiliate/homepage-feed', async (req, res) => {
 
     // -------------------------------------------------------------
     // SCENARIO B: Initial homepage load
+    // Single LEFT JOIN query: merchants come back whether or not
+    // they have active offers attached.
     // -------------------------------------------------------------
-    const [offersResult, merchantsResult] = await Promise.all([
-      zingoPool.query(`
-        SELECT 
-          ao.*,
-          to_jsonb(am.*) AS merchant
-        FROM affiliate_offers ao
-        JOIN affiliate_merchants am ON am.id = ao.merchant_id
-        WHERE ao.is_active = true AND am.is_active = true
-      `),
-      zingoPool.query(`
-        SELECT am.*
-        FROM affiliate_merchants am
-        WHERE am.is_active = true
-          AND NOT EXISTS (
-            SELECT 1 FROM affiliate_offers ao 
-            WHERE ao.merchant_id = am.id AND ao.is_active = true
-          )
-      `)
-    ]);
+    const combinedResult = await zingoPool.query(`
+      SELECT 
+        am.*,
+        COALESCE(
+          json_agg(ao.*) FILTER (WHERE ao.id IS NOT NULL),
+          '[]'
+        ) AS offers
+      FROM affiliate_merchants am
+      LEFT JOIN affiliate_offers ao 
+        ON ao.merchant_id = am.id AND ao.is_active = true
+      WHERE am.is_active = true
+      GROUP BY am.id
+    `);
 
-    // Group offers by resolved category
     const categoryBuckets = {};
+    const merchants = [];
 
-    offersResult.rows.forEach((row) => {
-      const resolvedCat = resolveCategory(row.category, row.description);
-      if (!categoryBuckets[resolvedCat]) {
-        categoryBuckets[resolvedCat] = [];
+  combinedResult.rows.forEach((merchantRow) => {
+  const { offers, ...merchant } = merchantRow;
+
+      // 1. Always collect the merchant
+      merchants.push(merchant);
+
+      // 2. If the merchant has no offers, nothing to bucket
+      if (!offers || offers.length === 0) {
+        return;
       }
-      categoryBuckets[resolvedCat].push(row);
-    });
 
+      // 3. Bucket the offers by resolved category
+      offers.forEach((offer) => {
+        const resolvedCat = resolveCategory(offer.category, offer.description);
+        if (!categoryBuckets[resolvedCat]) {
+          categoryBuckets[resolvedCat] = [];
+        }
+        categoryBuckets[resolvedCat].push({ ...offer, merchant });
+      });
+    });
     const categoriesMap = {};
     Object.keys(categoryBuckets).forEach((catName) => {
       const sorted = categoryBuckets[catName].sort(sortOffers);
@@ -205,7 +212,7 @@ router.get('/affiliate/homepage-feed', async (req, res) => {
     const responsePayload = {
       data: {
         categories: orderedCategories,
-        merchantsWithoutOffers: merchantsResult.rows || []
+        merchants
       }
     };
 
