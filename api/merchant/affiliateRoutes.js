@@ -11,7 +11,7 @@ const {upload, uploadFileToS3, deleteFileFromS3, uploadMediaFilesToS3} = require
 const multer = require('multer');
 const { sanitizeProductDescription } = require("../../utils/sanatizeHtml");
 const optionalFirebaseAuth = require("../../auth/optionalAuthenticateFirebaseToken");
-const { getCachedFeed, setCachedFeed } = require("../../utils/feedCacheService");
+const { getCachedFeed, setCachedFeed, invalidateFeedCache } = require("../../utils/feedCacheService");
 
 
 
@@ -31,8 +31,19 @@ router.get('/affiliate/offers/:merchantId', async (req, res) => {
     return res.status(500).json({ error: 'Failed to fetch affiliate offers.' });
   }
 });
+router.post('/affiliate/homepage-feed/clear-cache', authenticateFirebaseToken, async (req, res) => {
+  const userId = req.user.id;
+  console.log("Clearing cahce request from:", userId)
+  if (userId !== 6) {
+    console.log("You're not admin")
+    return res.status(403).json({ error: "Admin route only" });
+  }
+  console.log("cleared")
 
-
+  invalidateFeedCache();
+  console.log("[CACHE FLUSH] Triggered by admin", userId);
+  res.status(200).json({ cleared: true });
+});
 
 // GET /api/merchant/affiliate/homepage-feed
 router.get('/affiliate/homepage-feed', async (req, res) => {
