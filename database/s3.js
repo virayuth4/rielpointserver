@@ -7,7 +7,6 @@ const sharp = require('sharp');
 const path = require('path');
 require('dotenv').config();
 
-
 // Create S3 client
 const s3Client = new S3Client({
   region: process.env.AWS_REGION,
@@ -16,6 +15,16 @@ const s3Client = new S3Client({
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   },
 });
+
+// Helper to construct CloudFront CDN URL (with S3 fallback)
+const getCdnUrl = (key) => {
+  const cdnBase = process.env.CLOUDFRONT_DOMAIN;
+  if (cdnBase) {
+    // Remove trailing slash if present and append the key
+    return `${cdnBase.replace(/\/$/, '')}/${key.replace(/^\//, '')}`;
+  }
+  return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION || 'ap-southeast-1'}.amazonaws.com/${key}`;
+};
 
 // Create multer instance with memory storage
 const upload = multer({
@@ -62,16 +71,16 @@ const moveFileInS3 = async (sourceKey, destinationKey) => {
   try {
     // First copy the file to the new location
     await s3Client.send(new CopyObjectCommand(copyParams));
-    
+
     // Then delete the original file
     const deleteParams = {
       Bucket: process.env.S3_BUCKET_NAME,
       Key: sourceKey
     };
     await s3Client.send(new DeleteObjectCommand(deleteParams));
-    
-    // Return the new file URL
-    return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION || 'ap-southeast-1'}.amazonaws.com/${destinationKey}`;
+
+    // Return the CloudFront URL
+    return getCdnUrl(destinationKey);
   } catch (error) {
     console.error("Error moving file in S3:", error);
     throw error;
@@ -83,7 +92,7 @@ const uploadMediaFileToS3 = async (file, fileName, options = {}) => {
     let fileBuffer = file.buffer;
     let contentType = file.mimetype;
     let finalFileName = fileName;
-    
+
     // Default options
     const defaultOptions = {
       maxSizeInMB: 100, // 100MB default max size
@@ -96,21 +105,21 @@ const uploadMediaFileToS3 = async (file, fileName, options = {}) => {
       folder: '', // Optional subfolder
       skipTypeValidation: false // Skip file type validation if needed
     };
-    
+
     // Merge provided options with defaults
     const config = { ...defaultOptions, ...options };
-    
+
     // Validate file type if not skipped
     if (!config.skipTypeValidation && !config.allowedTypes.includes(contentType)) {
       throw new Error(`File type ${contentType} not allowed. Allowed types: ${config.allowedTypes.join(', ')}`);
     }
-    
+
     // Validate file size (convert MB to bytes)
     const fileSizeInMB = fileBuffer.length / (1024 * 1024);
     if (fileSizeInMB > config.maxSizeInMB) {
       throw new Error(`File size exceeds the limit of ${config.maxSizeInMB}MB`);
     }
-    
+
     // Handle images - convert them if option is set
     if (contentType.startsWith('image/') && config.convertImages) {
       if (config.imageFormat === 'avif' && contentType !== 'image/avif') {
@@ -123,31 +132,31 @@ const uploadMediaFileToS3 = async (file, fileName, options = {}) => {
         finalFileName = finalFileName.replace(/\.[^/.]+$/, '') + '.webp';
       }
     }
-    
+
     // Add folder prefix if specified
     if (config.folder) {
-      // Ensure folder has trailing slash but no leading slash
       const normalizedFolder = config.folder.endsWith('/')
         ? config.folder
         : `${config.folder}/`;
       finalFileName = `${normalizedFolder}${finalFileName}`;
     }
-    
+
     const params = {
       Bucket: process.env.S3_BUCKET_NAME,
       Key: finalFileName,
       Body: fileBuffer,
-      ContentType: contentType
+      ContentType: contentType,
+      CacheControl: "public, max-age=31536000, immutable" // Enables 1-year edge & browser caching
     };
-    
+
     const upload = new Upload({
       client: s3Client,
       params: params,
     });
-    
-    const result = await upload.done();
+
+    await upload.done();
     return {
-      url: result.Location,
+      url: getCdnUrl(finalFileName), // Return CloudFront domain
       key: finalFileName,
       size: fileBuffer.length,
       contentType
@@ -161,15 +170,14 @@ const uploadMediaFileToS3 = async (file, fileName, options = {}) => {
 // Upload multiple files to S3 - memory version
 const uploadMediaFilesToS3 = async (files, userId = 0, type, options = {}) => {
   try {
-    // If files is not an array or is empty, return empty array
-   if (!files) {
+    if (!files) {
       return [];
     }
     const fileArray = Array.isArray(files) ? files : [files];
-     if (fileArray.length === 0) {
+    if (fileArray.length === 0) {
       return [];
     }
-    
+
     // Default options for path configuration
     const defaultOptions = {
       pathPrefix: 'products', // Default to 'products', can be changed to 'vintage_products'
@@ -177,46 +185,37 @@ const uploadMediaFilesToS3 = async (files, userId = 0, type, options = {}) => {
       convertImages: true,
       imageFormat: 'avif'
     };
-    
-    // Merge provided options with defaults
+
     const config = { ...defaultOptions, ...options };
-    
+
     // Create an array of promises for parallel execution
     const uploadPromises = fileArray.map(async (file) => {
-      // Skip if file or originalname is undefined
       if (!file || !file.originalname) {
         console.warn('Skipping invalid file:', file);
         return null;
       }
-      
-      // Generate S3 path with userId for organization
+
       const timestamp = Date.now();
       const randomString = Math.random().toString(36).substring(2, 8);
-      
-      // Safely get extension from originalname
       const extension = file.originalname ? path.extname(file.originalname) : '';
       const s3FileName = `${timestamp}-${randomString}${extension}`;
-      
+
       try {
-        // Use the file directly from memory
         const result = await uploadMediaFileToS3(file, s3FileName, {
           folder: `${config.pathPrefix}/${userId}/${type}s`,
           skipTypeValidation: config.skipTypeValidation,
-          convertImages: config.convertImages && type === 'image', // Only convert if it's an image
+          convertImages: config.convertImages && type === 'image',
           imageFormat: config.imageFormat
         });
-        
-        return result.url;
+
+        return result.url; // Returns CloudFront URL from uploadMediaFileToS3
       } catch (error) {
         console.error(`Error uploading file ${file.originalname}:`, error);
-        return null; // Return null for failed uploads so we can filter them out
+        return null;
       }
     });
-    
-    // Execute all uploads in parallel and wait for them to complete
+
     const results = await Promise.all(uploadPromises);
-    
-    // Filter out any null results (failed uploads)
     return results.filter(url => url !== null);
   } catch (error) {
     console.error(`Error uploading ${type} files to S3:`, error);
@@ -226,39 +225,35 @@ const uploadMediaFilesToS3 = async (files, userId = 0, type, options = {}) => {
 
 const uploadSingleFileToS3 = async (file, userId, type, index = 0) => {
   try {
-    // console.log(`[Memory Check] Before upload ${index + 1}:`, process.memoryUsage());
-    
-    // Force garbage collection if available
     if (global.gc) {
       global.gc();
     }
-    
+
     const timestamp = Date.now();
     const randomString = Math.random().toString(36).substring(2, 8);
     const extension = path.extname(file.originalname) || '';
     const s3FileName = `products/${userId}/${type}s/${timestamp}-${randomString}${extension}`;
-    
+
     const params = {
       Bucket: process.env.S3_BUCKET_NAME,
       Key: s3FileName,
       Body: file.buffer,
-      ContentType: file.mimetype
+      ContentType: file.mimetype,
+      CacheControl: "public, max-age=31536000, immutable" // Enables 1-year edge & browser caching
     };
-    
+
     const upload = new Upload({
       client: s3Client,
       params: params,
     });
-    
-    const result = await upload.done();
-    
+
+    await upload.done();
+
     // Clear the file buffer from memory immediately
     file.buffer = null;
-    
-    // console.log(`[Memory Check] After upload ${index + 1}:`, process.memoryUsage());
-    
-    return result.Location;
-    
+
+    return getCdnUrl(s3FileName); // Return CloudFront domain
+
   } catch (error) {
     console.error(`Error uploading file ${index + 1}:`, error);
     throw error;
@@ -267,30 +262,28 @@ const uploadSingleFileToS3 = async (file, userId, type, index = 0) => {
 
 const uploadFilesSequentially = async (files, userId, type) => {
   if (!files || files.length === 0) return [];
-  
+
   const uploadedUrls = [];
-  
+
   for (let i = 0; i < files.length; i++) {
     try {
       console.log(`Processing ${type} ${i + 1}/${files.length} (${files[i].originalname})`);
-      
+
       const url = await uploadSingleFileToS3(files[i], userId, type, i);
       uploadedUrls.push(url);
-      
+
       // Add delay between uploads to prevent overwhelming the server
       await new Promise(resolve => setTimeout(resolve, 500));
-      
-      // Force garbage collection between uploads
+
       if (global.gc) {
         global.gc();
       }
-      
+
     } catch (error) {
       console.error(`Failed to upload ${type} ${i + 1}:`, error);
-      // Continue with next file instead of failing completely
     }
   }
-  
+
   return uploadedUrls;
 };
 
@@ -304,27 +297,25 @@ const uploadFileToS3 = async (file, fileName, format = 'avif') => {
     // Check if file is an image
     if (file.mimetype.startsWith('image/')) {
       if (format === 'avif') {
-        // Check if the file is already in AVIF format
         if (file.mimetype === 'image/avif') {
           console.log('Image is already in AVIF format. Skipping conversion.');
-          // You can return the original buffer or handle it as needed
-          fileBuffer = file.buffer; // Keep the original buffer
+          fileBuffer = file.buffer;
           contentType = 'image/avif';
           finalFileName = fileName.replace(/\.[^/.]+$/, '') + '.avif';
         } else {
-          // Convert to AVIF
           fileBuffer = await convertToAVIF(file.buffer);
           contentType = 'image/avif';
           finalFileName = fileName.replace(/\.[^/.]+$/, '') + '.avif';
         }
-      } 
+      }
     }
 
     const params = {
       Bucket: process.env.S3_BUCKET_NAME,
       Key: finalFileName,
       Body: fileBuffer,
-      ContentType: contentType
+      ContentType: contentType,
+      CacheControl: "public, max-age=31536000, immutable" // Enables 1-year edge & browser caching
     };
 
     const upload = new Upload({
@@ -332,18 +323,26 @@ const uploadFileToS3 = async (file, fileName, format = 'avif') => {
       params: params,
     });
 
-    const result = await upload.done();
-    return result.Location;
+    await upload.done();
+    return getCdnUrl(finalFileName); // Return CloudFront domain
   } catch (error) {
     console.error("Error uploading file to S3:", error);
     throw error;
   }
 };
 
-// Delete file from S3
+// Delete file from S3 (supports both CloudFront and S3 URLs)
 const deleteFileFromS3 = async (fileUrl) => {
   try {
-    const key = fileUrl.split('.amazonaws.com/')[1];
+    let key;
+    if (fileUrl.includes('.amazonaws.com/')) {
+      key = fileUrl.split('.amazonaws.com/')[1];
+    } else {
+      // Handles CloudFront domain URL: extracts the path key after the host
+      const urlObj = new URL(fileUrl);
+      key = urlObj.pathname.substring(1);
+    }
+
     const params = {
       Bucket: process.env.S3_BUCKET_NAME,
       Key: key,
@@ -366,7 +365,7 @@ const getFileUrlFromS3 = async (fileName) => {
 
   try {
     const command = new GetObjectCommand(params);
-    const signedUrl = await getSignedUrl(s3Client, command, {expiresIn: 3600}); // URL expires in 1 hour
+    const signedUrl = await getSignedUrl(s3Client, command, {expiresIn: 3600});
     return signedUrl;
   } catch (error) {
     console.error("Error getting file URL from S3:", error);
@@ -377,7 +376,6 @@ const getFileUrlFromS3 = async (fileName) => {
 // Test S3 connection
 const testS3Connection = async () => {
   try {
-    // Use a known file name or a test file name
     const testFileName = 'test-connection.txt';
     const params = {
       Bucket: process.env.S3_BUCKET_NAME,
@@ -385,21 +383,19 @@ const testS3Connection = async () => {
       Body: 'This is a test file to verify S3 connection',
       ContentType: 'text/plain'
     };
-    
-    // Try to upload a test file
+
     const upload = new Upload({
       client: s3Client,
       params: params,
     });
-    
+
     await upload.done();
-    
-    // Then delete it
+
     await s3Client.send(new DeleteObjectCommand({
       Bucket: process.env.S3_BUCKET_NAME,
       Key: testFileName
     }));
-    
+
     console.log('Successfully connected to S3');
     return true;
   } catch (error) {
@@ -409,8 +405,9 @@ const testS3Connection = async () => {
 };
 
 module.exports = {
-  upload, // Export the multer upload middleware
+  upload,
   s3Client,
+  getCdnUrl,
   uploadMediaFileToS3,
   uploadMediaFilesToS3,
   uploadFileToS3,
