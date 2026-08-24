@@ -86,6 +86,7 @@ app.use('/api/merchant', require('./api/merchant/affiliateRoutes'))
 app.use('/api/merchant', require('./api/merchant/affiliateOfferRoutes'))
 app.use('/api/merchant', require('./api/admin/cashBackRoutes'))
 app.use('/api/merchant', require('./api/merchant/promoRoutes'))
+app.use('/api/merchant', require('./api/merchant/hotelRoutes'))
 
 
 
