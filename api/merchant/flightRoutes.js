@@ -3,24 +3,14 @@ const zingoPool = require("../../database/pgZingo");
 const router = express.Router();
 
 
-router.get('/hotels', async (req, res) => {
+router.get('/flights', async (req, res) => {
   try {
     const query = `
       SELECT *
       FROM affiliate_offers
-      WHERE category = 'hotels'
-        AND (
-          description ILIKE '%Siem Reap%'
-          OR description ILIKE '%Phnom Penh%'
-          OR description ILIKE '%Battambang%'
-        )
+      WHERE category = 'travel'
+        
       ORDER BY
-        CASE
-          WHEN description ILIKE '%Phnom Penh%' THEN 1
-          WHEN description ILIKE '%Siem Reap%' THEN 2
-          WHEN description ILIKE '%Battambang%' THEN 3
-          ELSE 3
-        END,
         created_at DESC
     `;
 

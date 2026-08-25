@@ -60,7 +60,9 @@ router.get(
           end_at,
           image_paths,
           created_at,
-          updated_at
+          updated_at,
+          foodpanda,
+          grabfood
         FROM rielpoint_promo
         WHERE ${isNumeric ? "id = $1" : "slug = $1"}
       `;
@@ -113,6 +115,8 @@ router.post(
             terms,
             start_at,
             end_at,
+            foodpanda,
+            grabfood,
           } = req.body;
 
           const description = sanitizeProductDescription(req.body.description);
@@ -122,6 +126,8 @@ router.post(
           if (!merchant_name?.trim()) return res.status(400).json({ error: "Merchant name is required." });
           if (!description?.trim()) return res.status(400).json({ error: "Description is required." });
           if (!promo?.trim()) return res.status(400).json({ error: "Promo is required." });
+          const isFoodpanda = foodpanda === "true" || foodpanda === true;
+          const isGrabfood = grabfood === "true" || grabfood === true;
 
           if (start_at && end_at && new Date(start_at) > new Date(end_at)) {
             return res.status(400).json({ error: "End date cannot be before start date." });
@@ -138,7 +144,7 @@ router.post(
           const isInternational = is_international === "true" || is_international === true;
         const baseSlug = generatePromoBaseSlug(merchant_name, title);
 
-      const query = `
+          const query = `
         WITH next_id AS (
           SELECT nextval(pg_get_serial_sequence('rielpoint_promo', 'id')) AS id
         )
@@ -152,6 +158,8 @@ router.post(
           promo,
           map,
           is_international,
+          foodpanda,
+          grabfood,
           terms,
           start_at,
           end_at,
@@ -159,9 +167,9 @@ router.post(
         )
         SELECT
           next_id.id,
-          $12 || '-' || next_id.id,
+          $14 || '-' || next_id.id,
           $1, $2, $3, $4, $5,
-          $6, $7, $8, $9, $10, $11
+          $6, $7, $8, $9, $10, $11, $12, $13
         FROM next_id
         RETURNING id, slug;
       `;
@@ -174,11 +182,13 @@ router.post(
         promo.trim(),
         map,
         isInternational,
+        isFoodpanda,
+        isGrabfood,
         terms?.trim() || null,
         start_at || null,
         end_at || null,
         JSON.stringify(imageUrls),
-        baseSlug, // $12
+        baseSlug, // $14
       ];
 
       const result = await zingoPool.query(query, values);
@@ -234,6 +244,8 @@ router.put(
             promo,
             map,
             is_international,
+            foodpanda,
+            grabfood,
             terms,
             start_at,
             end_at,
@@ -274,12 +286,14 @@ router.put(
 
           const allImageUrls = [...keptImages, ...newImageUrls];
           const isInternational = is_international === "true" || is_international === true;
+          const isFoodpanda = foodpanda === "true" || foodpanda === true;
+          const isGrabfood = grabfood === "true" || grabfood === true;
 
           // Recalculate slug (Deterministic: merchant + title + ID)
           const baseSlug = generatePromoBaseSlug(merchant_name, title);
           const slug = `${baseSlug}-${id}`;
 
-        const query = `
+       const query = `
   UPDATE rielpoint_promo
   SET
     merchant_name = $1,
@@ -289,13 +303,15 @@ router.put(
     promo = $5,
     map = $6,
     is_international = $7,
-    terms = $8,
-    start_at = $9,
-    end_at = $10,
-    image_paths = $11,
-    slug = $12 || '-' || id::text,
+    foodpanda = $8,
+    grabfood = $9,
+    terms = $10,
+    start_at = $11,
+    end_at = $12,
+    image_paths = $13,
+    slug = $14 || '-' || id::text,
     updated_at = NOW()
-  WHERE id = $13
+  WHERE id = $15
   RETURNING id, slug, image_paths;
 `;
 
@@ -307,12 +323,14 @@ const values = [
   promo.trim(),
   map || null,
   isInternational,
+  isFoodpanda,
+  isGrabfood,
   terms?.trim() || null,
   start_at || null,
   end_at || null,
   JSON.stringify(allImageUrls),
-  baseSlug, // $12 — just the base, no id appended in JS
-  id,       // $13
+  baseSlug, // $14
+  id,       // $15
 ];
 
           const result = await zingoPool.query(query, values);
