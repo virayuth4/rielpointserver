@@ -10,7 +10,7 @@ const crypto = require('crypto');
 const { upload, uploadFileToS3, deleteFileFromS3, uploadMediaFilesToS3 } = require("../../database/s3");
 const multer = require('multer');
 const { sanitizeProductDescription } = require("../../utils/sanatizeHtml");
-const { invalidateFeedCache } = require("../../utils/feedCacheService");
+const { invalidateFeedCache, setCachedFeed, getCachedFeed } = require("../../utils/feedCacheService");
 const { generatePromoBaseSlug } = require("../../lib/promoSlugGenerator");
 
 
@@ -30,6 +30,43 @@ router.get('/promos', async (req, res) => {
   } catch (error) {
     console.error('Error fetching promos:', error);
 
+    return res.status(500).json({
+      error: 'Failed to fetch promos',
+    });
+  }
+});
+
+router.get('/promos/v2', async (req, res) => {
+  try {
+    const cacheKey = 'promos:all';
+    const cachedResponse = getCachedFeed(cacheKey);
+
+    if (cachedResponse) {
+      console.log(`[CACHE HIT] Serving from memory for key: ${cacheKey}`);
+      return res.status(200).json(cachedResponse);
+    }
+
+    console.log(`[CACHE MISS] Fetching from DB for key: ${cacheKey}`);
+
+    const query = `
+      SELECT *
+      FROM rielpoint_promo
+      ORDER BY created_at DESC
+    `;
+
+    const result = await zingoPool.query(query);
+
+    const responsePayload = {
+      data: result.rows,
+    };
+
+    
+    setCachedFeed(cacheKey, responsePayload, 1800);
+    console.log(`[CACHE SET] Cached response for key: ${cacheKey} (TTL: 1h)`);
+    return res.status(200).json(responsePayload);
+
+  } catch (error) {
+    console.error('Error fetching promos:', error);
     return res.status(500).json({
       error: 'Failed to fetch promos',
     });
