@@ -5,7 +5,60 @@ const router = express.Router();
 const authenticateFirebaseToken = require('../../auth/authFirebaseToken');
 
 // Server-side constants — never trust these from the client
-const ALLOWED_CASHBACK_RATES = [10, 25, 50]; // % of commission returned to user as cashback
+const ALLOWED_CASHBACK_RATES = [10, 25, 50, 70, 80, 90]; // % of commission returned to user as cashback
+
+
+router.get('/cashback/transactions', authenticateFirebaseToken, async (req, res) => {
+    const client = await zingoPool.connect();
+    const userId = req.user?.id
+    console.log("userId", userId)
+    try {
+        // NOTE: adapt this lookup to however your other customer-facing routes
+        // (e.g. coupons/my) resolve the rielpoint_users.id from the decoded
+        // firebase token. Assuming the middleware attaches the firebase uid
+        // as req.user.uid — swap this for whatever helper you already use.
+       
+
+        const { rows } = await client.query(
+            `SELECT
+                at.id,
+                at.merchant_id,
+                m.name AS merchant_name,
+                at.external_transaction_id,
+                at.order_amount,
+                at.currency,
+                at.commission_amount,
+                at.cashback_rate,
+                at.cashback_amount,
+                at.status,
+                at.transaction_at,
+                at.created_at
+             FROM affiliate_transactions at
+             LEFT JOIN affiliate_merchants m ON m.id = at.merchant_id
+             WHERE at.user_id = $1
+             ORDER BY at.transaction_at DESC, at.created_at DESC
+             LIMIT 100`,
+            [userId]
+        );
+
+        const balanceResult = await client.query(
+            `SELECT COALESCE(SUM(cashback_amount), 0) AS balance
+             FROM affiliate_transactions
+             WHERE user_id = $1 AND status = 'confirmed'`,
+            [userId]
+        );
+
+        return res.status(200).json({
+            transactions: rows,
+            balance: Number(balanceResult.rows[0].balance),
+        });
+    } catch (err) {
+        console.error('Error fetching cashback transactions:', err);
+        return res.status(500).json({ message: 'Failed to load transactions.' });
+    } finally {
+        client.release();
+    }
+});
 
 router.post('/cashback/add', authenticateFirebaseToken, async (req, res) => {
     const {
