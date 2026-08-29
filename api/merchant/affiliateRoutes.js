@@ -81,6 +81,7 @@ router.get('/affiliate/homepage-feed', async (req, res) => {
       if (cat === 'hotels') {
         if (desc.includes('singapore')) return 'Hotels - Singapore';
         if (desc.includes('malaysia') || desc.includes('kuala')) return 'Hotels - Malaysia';
+        if (desc.includes('hong kong')) return 'Hotels - Hong Kong';
         if (desc.includes('siem reap')) return 'Hotels - Siem Reap';
         if (desc.includes('phnom penh')) return 'Hotels - Phnom Penh';
         if (desc.includes('tokyo')) return 'Hotels - Tokyo, Japan';
