@@ -3,10 +3,145 @@ const zingoPool = require("../../database/pgZingo");
 const { admin, auth } = require('../../auth/firebase-admin');
 const router = express.Router();
 const authenticateFirebaseToken = require('../../auth/authFirebaseToken');
+const requireAdmin = require("../../middleware/requireAdmin");
 
 // Server-side constants — never trust these from the client
 const ALLOWED_CASHBACK_RATES = [10, 25, 50, 70, 80, 90]; // % of commission returned to user as cashback
 
+const ALLOWED_STATUSES = [
+  "merchant_confirmed",
+  "rielpoint_confirmed",
+  "confirmed",
+  "rejected",
+]; // pending is the only initial state, never client-settable
+
+const VALID_TRANSITIONS = {
+  pending: ["merchant_confirmed", "rejected"],
+  merchant_confirmed: ["rielpoint_confirmed", "rejected"],
+  rielpoint_confirmed: ["confirmed", "rejected"],
+  confirmed: [],   // terminal — no further changes once confirmed
+  rejected: [],    // terminal
+};
+
+
+router.post(
+  "/cashback/transactions/:id/status",
+  authenticateFirebaseToken,
+  requireAdmin,
+  async (req, res) => {
+    const { id } = req.params;
+    const { status, cashbackAmount, reason } = req.body;
+    const adminId = req.user?.id;
+
+    console.log("[PATCH status] incoming:", { id, status, cashbackAmount, reason, adminId });
+
+    if (!ALLOWED_STATUSES.includes(status)) {
+      console.log("[PATCH status] rejected: not in ALLOWED_STATUSES", { status, ALLOWED_STATUSES });
+      return res.status(400).json({
+        message: `Status must be one of: ${ALLOWED_STATUSES.join(", ")}.`,
+      });
+    }
+
+    let numericCashbackAmount = null;
+    if (status === "confirmed") {
+      numericCashbackAmount = Number(cashbackAmount);
+      if (!Number.isFinite(numericCashbackAmount) || numericCashbackAmount <= 0) {
+        console.log("[PATCH status] rejected: bad cashbackAmount", { cashbackAmount });
+        return res.status(400).json({
+          message: "A valid cashback amount is required to confirm.",
+        });
+      }
+    }
+
+    const client = await zingoPool.connect();
+    try {
+      await client.query("BEGIN");
+
+      const { rows } = await client.query(
+        `SELECT id, status, cashback_amount FROM affiliate_transactions WHERE id = $1 FOR UPDATE`,
+        [id]
+      );
+
+      if (rows.length === 0) {
+        console.log("[PATCH status] rejected: transaction not found", { id });
+        await client.query("ROLLBACK");
+        return res.status(404).json({ message: "Transaction not found." });
+      }
+
+      const current = rows[0].status;
+      const allowedNext = VALID_TRANSITIONS[current] || [];
+
+      console.log("[PATCH status] transition check:", {
+        current,
+        requested: status,
+        allowedNext,
+        isAllowed: allowedNext.includes(status),
+      });
+
+      if (!allowedNext.includes(status)) {
+        console.log("[PATCH status] rejected: invalid transition", { current, status, allowedNext });
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          message: `Cannot change status from "${current}" to "${status}".`,
+        });
+      }
+
+      const finalAmount =
+        status === "confirmed" ? numericCashbackAmount : rows[0].cashback_amount;
+
+      const updated = await client.query(
+        `UPDATE affiliate_transactions
+         SET status = $1,
+             cashback_amount = $2,
+             status_reason = $3,
+             status_updated_by = $4,
+             status_updated_at = NOW()
+         WHERE id = $5
+         RETURNING *`,
+        [status, finalAmount, reason || null, adminId, id]
+      );
+
+      console.log("[PATCH status] success:", updated.rows[0]);
+
+      await client.query("COMMIT");
+      return res.status(200).json({ transaction: updated.rows[0] });
+    } catch (err) {
+      console.error("[PATCH status] DB error updating cashback status:", err);
+      await client.query("ROLLBACK");
+      return res.status(500).json({ message: "Failed to update status." });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+
+router.get('/cashback/transactions/all',  authenticateFirebaseToken, requireAdmin, async (req, res) => {
+    const client = await zingoPool.connect();
+    const userId = req.user?.id
+    console.log("Getting All Cashback transactions")
+    console.log("userId", userId)
+    try {
+       const result = await client.query(
+        `
+        SELECT * FROM affiliate_transactions
+        `
+       ) 
+       
+
+
+
+        return res.status(200).json({
+            transactions: result.rows,
+            
+        });
+    } catch (err) {
+        console.error('Error fetching cashback transactions:', err);
+        return res.status(500).json({ message: 'Failed to load transactions.' });
+    } finally {
+        client.release();
+    }
+});
 
 router.get('/cashback/transactions', authenticateFirebaseToken, async (req, res) => {
     const client = await zingoPool.connect();
