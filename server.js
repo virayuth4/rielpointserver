@@ -88,6 +88,7 @@ app.use('/api/merchant', require('./api/admin/cashBackRoutes'))
 app.use('/api/merchant', require('./api/merchant/promoRoutes'))
 app.use('/api/merchant', require('./api/merchant/hotelRoutes'))
 app.use('/api/merchant', require('./api/merchant/flightRoutes'))
+app.use('/api/merchant', require('./api/merchant/withdrawalRoutes'))
 
 
 
