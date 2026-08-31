@@ -298,7 +298,9 @@ router.post('/create-user-profile', async (req, res) => {
 
   const phoneNumber = email.split('@')[0];
   const points = 0; // promo points for new users
-  const username = fullName.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, '_');
+  const username = fullName
+    ? `${fullName.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, '_')}_${phoneNumber}`
+    : null;
 
   try {
     const checkUserQuery = 'SELECT * FROM rielpoint_users WHERE email = $1';
