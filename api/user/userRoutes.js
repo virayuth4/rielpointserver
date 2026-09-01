@@ -4,8 +4,8 @@ const { admin, auth } = require('../../auth/firebase-admin');
 const axios = require("axios");
 const router = express.Router();
 const authenticateFirebaseToken = require('../../auth/authFirebaseToken');
-const { normalizePhoneNumber } = require("../../lib/normalizePhoneNumber");
-const jwt = require('jsonwebtoken'); 
+const { normalizePhoneNumber, toFirebaseEmail } = require("../../lib/normalizePhoneNumber");
+const jwt = require('jsonwebtoken');
 const RESET_TOKEN_SECRET = process.env.OTP_ENCRYPTION_KEY;
 
 
@@ -14,10 +14,10 @@ const RESET_TOKEN_SECRET = process.env.OTP_ENCRYPTION_KEY;
 async function sendOTPWithServiceAPI(phoneNumber, otp, fullName, requestNumber = 1) {
     console.log("\n--- [START] Sending OTP via External Service ---");
     console.log(`[Details] Phone: ${phoneNumber} | OTP: ${otp} | Name: ${fullName} | Attempt: ${requestNumber}`);
-    
+
     const baseUrl = (process.env.NEXT_PUBLIC_OTP_BACKEND || '').replace(/\/+$/, '');
     const otpBackendUrl = `${baseUrl}/api/send-otp`;
-    
+
     console.log("[Target Endpoint]:", otpBackendUrl);
 
     if (!baseUrl) {
@@ -68,10 +68,10 @@ async function sendOTPWithServiceAPI(phoneNumber, otp, fullName, requestNumber =
             console.error(`   └ Reason: ${error.message}`);
         }
 
-        return { 
-            success: false, 
-            error: 'Failed to send OTP', 
-            details: error.response?.data || error.message 
+        return {
+            success: false,
+            error: 'Failed to send OTP',
+            details: error.response?.data || error.message
         };
     } finally {
         console.log("--- [END] OTP Process Completed ---\n");
@@ -83,14 +83,14 @@ router.get('/user/profile', authenticateFirebaseToken, async (req, res) => {
     // console.log('Firebase UID from user-profile route', req.user.uid)
     // console.log("User Id", req.user.id)
     // console.log("userId", req.user)
-    
-    
+
+
     try {
-     
+
 
      const query = `SELECT * FROM rielpoint_users WHERE id = $1`;
     const result = await zingoPool.query(query, [req.user.id]);
-        
+
         if (result.rows.length === 0) {
             return res.status(404).json({
                 error: "Not Found",
@@ -106,13 +106,13 @@ router.get('/user/profile', authenticateFirebaseToken, async (req, res) => {
             emailVerified: req.user.email_verified,
             ...(req.user.name && { name: req.user.name }),
             ...(req.user.picture && { picture: req.user.picture }),
-            iat: req.user.iat, 
-            exp: req.user.exp, 
-            aud: req.user.aud, 
-            iss: req.user.iss  
+            iat: req.user.iat,
+            exp: req.user.exp,
+            aud: req.user.aud,
+            iss: req.user.iss
         };
 
-        res.status(200).json({ 
+        res.status(200).json({
             user: userData,
             session: sessionInfo
         });
@@ -136,13 +136,8 @@ router.post("/user/registration/initiate", async (req, res) => {
         console.log("Full Name in register initiation", fullName);
         console.log("Original Phone Number in register initiation", phoneNumber);
 
-        if (phoneNumber.startsWith('0')) {
-            phoneNumber = phoneNumber.substring(1);
-        } else if (phoneNumber.startsWith('855')) {
-            phoneNumber = phoneNumber.substring(3);
-        }
-
-        const phoneEmail = phoneNumber + "@phone.com";
+        phoneNumber = normalizePhoneNumber(phoneNumber);
+        const phoneEmail = toFirebaseEmail(phoneNumber);
 
         try {
             const userRecord = await auth.getUserByEmail(phoneEmail);
@@ -211,15 +206,8 @@ router.post("/user/registration/otp/confirmation/:phoneNumber", async (req, res)
     console.log("==========OTP Confirmation ==========");
     const { otp } = req.body;
 
-    let phoneNumber = req.params.phoneNumber.replace(/^:/, '').trim();
+    let phoneNumber = normalizePhoneNumber(req.params.phoneNumber.replace(/^:/, '').trim());
     console.log(`Raw phone number from params: "${req.params.phoneNumber}"`);
-
-    if (phoneNumber.startsWith('0')) {
-        phoneNumber = phoneNumber.substring(1);
-    } else if (phoneNumber.startsWith('855')) {
-        phoneNumber = phoneNumber.substring(3);
-    }
-
     console.log(`Standardized phone number: "${phoneNumber}"`);
     console.log(`Phone number length: ${phoneNumber.length}`);
     console.log(`OTP: ${otp}`);
@@ -291,17 +279,14 @@ router.post("/user/registration/otp/confirmation/:phoneNumber", async (req, res)
 
 
 router.post('/create-user-profile', async (req, res) => {
-  console.log('=====create user route hit=====');
-  const { email, fullName } = req.body;
-  console.log("User Email", email);
-  console.log("FullName", fullName);
-
+  const { email, fullName, referredBy } = req.body;
   const phoneNumber = email.split('@')[0];
-  const points = 0; // promo points for new users
+  const points = 0;
   const username = fullName
     ? `${fullName.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, '_')}_${phoneNumber}`
     : null;
 
+    console.log("Creating user profile with email:", email, fullName, referredBy);
   try {
     const checkUserQuery = 'SELECT * FROM rielpoint_users WHERE email = $1';
     const checkUserResult = await zingoPool.query(checkUserQuery, [email]);
@@ -313,11 +298,25 @@ router.post('/create-user-profile', async (req, res) => {
       });
     }
 
+    // Validate referredBy: must be a real user, and can't be self-referral
+    let validReferrerId = null;
+    if (referredBy) {
+      const referrerCheck = await zingoPool.query(
+        'SELECT id FROM rielpoint_users WHERE id = $1',
+        [referredBy]
+      );
+      if (referrerCheck.rows.length > 0) {
+        validReferrerId = referrerCheck.rows[0].id;
+      }
+    }
+
     const insertUserQuery = `
-      INSERT INTO rielpoint_users (email, role, fullname, phone_number, rielpoints, username)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO rielpoint_users (email, role, fullname, phone_number, rielpoints, username, referred_by)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *`;
-    const insertUserValues = [email, 'customer', fullName, normalizePhoneNumber(phoneNumber), points, username];
+    const insertUserValues = [
+      email, 'customer', fullName, normalizePhoneNumber(phoneNumber), points, username, validReferrerId
+    ];
 
     const insertResult = await zingoPool.query(insertUserQuery, insertUserValues);
 
@@ -331,16 +330,11 @@ router.post('/create-user-profile', async (req, res) => {
   }
 });
 
-
 router.post("/user/forgot-password/initiate", async (req, res) => {
     console.log("==========Initiate Forgot Password ==========");
     let { phoneNumber } = req.body; // no password here — nothing sensitive yet
 
-    if (phoneNumber.startsWith('0')) {
-        phoneNumber = phoneNumber.substring(1);
-    } else if (phoneNumber.startsWith('855')) {
-        phoneNumber = phoneNumber.substring(3);
-    }
+    phoneNumber = normalizePhoneNumber(phoneNumber);
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -375,12 +369,7 @@ router.post("/user/forgot-password/otp-confirmation", async (req, res) => {
         return res.status(400).json({ success: false, message: "Password must be at least 8 characters." });
     }
 
-    let formattedPhoneNumber = phoneNumber;
-    if (formattedPhoneNumber.startsWith('0')) {
-        formattedPhoneNumber = formattedPhoneNumber.substring(1);
-    } else if (formattedPhoneNumber.startsWith('855')) {
-        formattedPhoneNumber = formattedPhoneNumber.substring(3);
-    }
+    const formattedPhoneNumber = normalizePhoneNumber(phoneNumber);
 
     try {
         const getOtpQuery = `
@@ -434,17 +423,103 @@ router.post("/user/forgot-password/otp-confirmation", async (req, res) => {
         return res.status(500).json({ success: false, message: "Internal server error." });
     }
 });
- 
-const resetFirebasePassword = async (phoneNumber, newPassword) => {
-    let formattedPhone = phoneNumber;
-    if (phoneNumber.startsWith('0')) {
-        formattedPhone = '855' + phoneNumber.substring(1);
-    } else if (!phoneNumber.startsWith('855')) {
-        formattedPhone = '855' + phoneNumber;
+
+router.post("/user/registration/otp/resend/:phoneNumber", async (req, res) => {
+    console.log("==========OTP Resend==========");
+
+    const rawParam = req.params.phoneNumber;
+    const trimmedParam = rawParam.replace(/^:/, '').trim();
+    let phoneNumber = normalizePhoneNumber(trimmedParam);
+
+    console.log("[DEBUG] raw param:", rawParam);
+    console.log("[DEBUG] trimmed param:", trimmedParam);
+    console.log("[DEBUG] normalized phoneNumber used for lookup:", phoneNumber);
+
+    const client = await zingoPool.connect();
+    try {
+        // Debug: see exactly what phone_number values currently exist in the table
+        const debugAllQuery = `SELECT "phone_number", "resend_count", "created_at", "expires_at" FROM rielpoint_otp`;
+        const debugAllResult = await client.query(debugAllQuery);
+        console.log("[DEBUG] all rows currently in rielpoint_otp:", debugAllResult.rows);
+
+        const findQuery = `
+            SELECT "user_info", "resend_count"
+            FROM rielpoint_otp
+            WHERE "phone_number" = $1
+        `;
+        console.log("[DEBUG] running findQuery with param:", [phoneNumber]);
+        const findResult = await client.query(findQuery, [phoneNumber]);
+
+        console.log("[DEBUG] findResult row count:", findResult.rows.length);
+
+        if (findResult.rows.length === 0) {
+            console.log("[DEBUG] No matching row for phoneNumber:", phoneNumber, "— check format above against rows dumped above");
+            return res.status(404).json({
+                success: false,
+                message: "No pending registration found for this number. Please start sign up again."
+            });
+        }
+
+        const { user_info, resend_count } = findResult.rows[0];
+        const currentResendCount = resend_count || 0;
+        console.log("[DEBUG] found row — user_info:", user_info, "resend_count:", currentResendCount);
+
+        if (currentResendCount >= 3) {
+            console.log("[DEBUG] resend limit hit for phoneNumber:", phoneNumber);
+            return res.status(429).json({
+                success: false,
+                message: "Maximum resend attempts reached. Please start sign up again."
+            });
+        }
+
+        let fullName;
+        try {
+            fullName = JSON.parse(user_info)?.fullName;
+        } catch {
+            fullName = undefined;
+        }
+        console.log("[DEBUG] parsed fullName:", fullName);
+
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        console.log("[DEBUG] new OTP generated:", otp);
+
+        const updateQuery = `
+            UPDATE rielpoint_otp
+            SET "otp_code" = $1,
+                "attempts" = 0,
+                "resend_count" = $2,
+                "created_at" = CURRENT_TIMESTAMP,
+                "expires_at" = CURRENT_TIMESTAMP + INTERVAL '1 minute'
+            WHERE "phone_number" = $3
+            RETURNING *;
+        `;
+        const updateResult = await client.query(updateQuery, [otp, currentResendCount + 1, phoneNumber]);
+        console.log("[DEBUG] Resent OTP row:", updateResult.rows[0]);
+
+        // Same as registration/initiate — currently disabled while testing without real SMS delivery.
+        const otpResult = await sendOTPWithServiceAPI(phoneNumber, otp, fullName, currentResendCount + 1);
+        if (!otpResult.success) {
+            return res.status(502).json({ success: false, error: "Failed to resend OTP.", details: otpResult.details });
+        }
+
+        return res.json({
+            success: true,
+            message: "OTP resent successfully",
+            resendCount: currentResendCount + 1
+        });
+
+    } catch (error) {
+        console.error("[DEBUG] Error in OTP resend:", error);
+        return res.status(500).json({ success: false, error: error.message });
+    } finally {
+        client.release();
     }
-    const email = `${formattedPhone}@phone.com`;
+});
+
+const resetFirebasePassword = async (phoneNumber, newPassword) => {
+    const email = toFirebaseEmail(phoneNumber);
     console.log("Phone Email in Reset Firebase Password", email);
- 
+
     try {
         const userRecord = await admin.auth().getUserByEmail(email);
         await admin.auth().updateUser(userRecord.uid, { password: newPassword });
