@@ -4,11 +4,60 @@ const { admin, auth } = require('../../auth/firebase-admin');
 const router = express.Router();
 const authenticateFirebaseToken = require('../../auth/authFirebaseToken');
 const requireAdmin = require("../../middleware/requireAdmin");
+const axios = require("axios");
+
+
+async function sendWithdrawalRequestToSupportTelegramNotification(withdrawalRequest, currentBalance) {
+  const {
+    id,
+    user_id: userId,
+    amount,
+    currency,
+    payout_method: payoutMethod,
+    aba_account_number: abaAccountNumber,
+    aba_account_name: abaAccountName,
+    telegram_phone: telegramPhone,
+  } = withdrawalRequest;
+
+  const message =
+    `New Withdrawal Request:\n\n` +
+    `Request ID: ${id}\n` +
+    `User ID: ${userId}\n` +
+    `Amount: ${Number(amount).toFixed(2)} ${currency}\n` +
+    `Remaining Balance: ${Number(currentBalance).toFixed(2)} ${currency}\n` +
+    `Payout Method: ${payoutMethod}\n` +
+    (payoutMethod === "aba"
+      ? `ABA Account Number: ${abaAccountNumber}\nABA Account Name: ${abaAccountName}\n`
+      : "") +
+    (telegramPhone ? `Telegram Phone: ${telegramPhone}\n` : "");
+
+  // console.log("Sending Withdrawal Request to Telegram notification with message:", message);
+
+  try {
+    const botToken = String(process.env.TELEGRAM_SUPPORT_BOT_TOKEN.trim());
+    const chatId = Number(process.env.TELEGRAM_CHAT_ID.trim());
+
+    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+    console.log("Telegram API URL:", url);
+
+    await axios.post(url, {
+      chat_id: chatId,
+      text: message,
+      parse_mode: "Markdown",
+    });
+
+    console.log("Telegram notification sent successfully");
+    return { success: true };
+  } catch (error) {
+    console.error("Error sending Telegram notification:", error.message);
+    return { success: false, error: error.message };
+  }
+}
 
 const WITHDRAWAL_STATUSES = ["requested", "processing", "paid", "failed"];
 
 // Minimum withdrawal — adjust or remove if you don't want a floor
-const MIN_WITHDRAWAL_AMOUNT = 5;
+const MIN_WITHDRAWAL_AMOUNT = 1;
 
 // --- shared helper: compute a user's current balance from the ledger ---
 // SUM(credit) - SUM(debit) - SUM(reversal is itself a credit-type entry,
@@ -132,6 +181,13 @@ router.post(
       );
 
       await client.query("COMMIT");
+
+      sendWithdrawalRequestToSupportTelegramNotification(
+        withdrawalRequest,
+        currentBalance - numericAmount
+      ).catch((err) =>
+        console.error("[withdrawal request] telegram notify failed:", err)
+      );
       return res.status(201).json({ withdrawal: withdrawalRequest });
     } catch (err) {
       await client.query("ROLLBACK");
