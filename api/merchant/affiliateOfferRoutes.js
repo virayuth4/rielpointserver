@@ -413,7 +413,7 @@ router.post('/affiliate-merchants/add',
         } = req.body;
  
         const slug = (req.body.slug || '').trim().toLowerCase();
-        const general_description = sanitizeProductDescription(req.body.general_description || '');
+        const general_description = (req.body.general_description || '').trim();
  
         const validationError = validateMerchantPayload({ ...req.body, slug });
         if (validationError) {
@@ -509,7 +509,7 @@ router.put('/affiliate-merchants/:id',
         } = req.body;
  
         const slug = (req.body.slug || '').trim().toLowerCase();
-        const general_description = sanitizeProductDescription(req.body.general_description || '');
+        const general_description = (req.body.general_description || '').trim();
  
         const validationError = validateMerchantPayload({ ...req.body, slug });
         if (validationError) {
