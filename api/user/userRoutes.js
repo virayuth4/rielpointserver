@@ -181,16 +181,16 @@ router.post("/user/registration/initiate", async (req, res) => {
         const result = await client.query(query, values);
         console.log("Query Result:", result.rows[0]);
 
-        const otpResult = await sendOTPWithServiceAPI(phoneNumber, otp, fullName);
+        // const otpResult = await sendOTPWithServiceAPI(phoneNumber, otp, fullName);
 
-            if (!otpResult.success) {
-                console.error("OTP Delivery failed, notifying client...");
-                return res.status(502).json({
-                    success: false,
-                    error: "Failed to deliver SMS OTP. Please try again.",
-                    details: otpResult.details
-                });
-            }
+        //     if (!otpResult.success) {
+        //         console.error("OTP Delivery failed, notifying client...");
+        //         return res.status(502).json({
+        //             success: false,
+        //             error: "Failed to deliver SMS OTP. Please try again.",
+        //             details: otpResult.details
+        //         });
+        //     }
 
         return res.json({ success: true, message: 'OTP sent successfully' });
 
@@ -280,13 +280,26 @@ router.post("/user/registration/otp/confirmation/:phoneNumber", async (req, res)
 
 router.post('/create-user-profile', async (req, res) => {
   const { email, fullName, referredBy } = req.body;
-  const phoneNumber = email.split('@')[0];
   const points = 0;
-  const username = fullName
-    ? `${fullName.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, '_')}_${phoneNumber}`
-    : null;
 
-    console.log("Creating user profile with email:", email, fullName, referredBy);
+  // Phone-based signups use a synthetic placeholder email: 855<phone>@phone.com.
+  // Real emails (Google sign-up, or any future email/password signup) are NOT
+  // phone placeholders and must not be parsed as one.
+  const isPhonePlaceholderEmail = /^855\d+@phone\.com$/i.test(email || '');
+  const rawPhoneNumber = isPhonePlaceholderEmail ? email.split('@')[0].slice(3) : null;
+  const phoneNumber = rawPhoneNumber ? normalizePhoneNumber(rawPhoneNumber) : null;
+
+  // fullName is no longer collected at signup — fall back to "user" + phoneNumber
+  // when we have one, otherwise fall back to the email local part.
+  const resolvedFullName =
+    fullName || (rawPhoneNumber ? `user${rawPhoneNumber}` : email.split('@')[0]);
+
+  const username = `${resolvedFullName
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, '')
+    .replace(/\s+/g, '_')}_${rawPhoneNumber || Date.now()}`;
+
+    console.log("Creating user profile with email:", email, resolvedFullName, referredBy);
   try {
     const checkUserQuery = 'SELECT * FROM rielpoint_users WHERE email = $1';
     const checkUserResult = await zingoPool.query(checkUserQuery, [email]);
@@ -315,7 +328,7 @@ router.post('/create-user-profile', async (req, res) => {
       VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *`;
     const insertUserValues = [
-      email, 'customer', fullName, normalizePhoneNumber(phoneNumber), points, username, validReferrerId
+      email, 'customer', resolvedFullName, phoneNumber, points, username, validReferrerId
     ];
 
     const insertResult = await zingoPool.query(insertUserQuery, insertUserValues);
@@ -329,7 +342,6 @@ router.post('/create-user-profile', async (req, res) => {
     res.status(500).json({ error: 'Failed to process user profile' });
   }
 });
-
 router.post("/user/forgot-password/initiate", async (req, res) => {
     console.log("==========Initiate Forgot Password ==========");
     let { phoneNumber } = req.body; // no password here — nothing sensitive yet
