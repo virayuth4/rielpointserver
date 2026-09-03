@@ -181,16 +181,16 @@ router.post("/user/registration/initiate", async (req, res) => {
         const result = await client.query(query, values);
         console.log("Query Result:", result.rows[0]);
 
-        // const otpResult = await sendOTPWithServiceAPI(phoneNumber, otp, fullName);
+        const otpResult = await sendOTPWithServiceAPI(phoneNumber, otp, fullName);
 
-        //     if (!otpResult.success) {
-        //         console.error("OTP Delivery failed, notifying client...");
-        //         return res.status(502).json({
-        //             success: false,
-        //             error: "Failed to deliver SMS OTP. Please try again.",
-        //             details: otpResult.details
-        //         });
-        //     }
+            if (!otpResult.success) {
+                console.error("OTP Delivery failed, notifying client...");
+                return res.status(502).json({
+                    success: false,
+                    error: "Failed to deliver SMS OTP. Please try again.",
+                    details: otpResult.details
+                });
+            }
 
         return res.json({ success: true, message: 'OTP sent successfully' });
 
