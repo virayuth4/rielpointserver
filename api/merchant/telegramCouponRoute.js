@@ -3,10 +3,15 @@ const express = require("express");
 const router = express.Router();
 const { verifyTelegramInitData } = require("../../lib/telegramAuth");
 const zingoPool = require("../../database/pgZingo");
-
 router.post("/merchant-status", async (req, res) => {
   try {
     const { initData } = req.body;
+
+    // --- DEBUG ---
+    console.log("DEBUG initData present:", !!initData, "length:", initData?.length);
+    console.log("DEBUG TELEGRAM_BOT_TOKEN present:", !!process.env.TELEGRAM_BOT_TOKEN, "length:", process.env.TELEGRAM_BOT_TOKEN?.length);
+    // --- END DEBUG ---
+
     if (!verifyTelegramInitData(initData, process.env.TELEGRAM_BOT_TOKEN)) {
       return res.status(401).json({ error: "Invalid Telegram session" });
     }
