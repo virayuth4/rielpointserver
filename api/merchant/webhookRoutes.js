@@ -2,7 +2,7 @@ const express = require("express");
 const zingoPool = require("../../database/pgZingo");
 const router = express.Router();
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const BOT_TOKEN = process.env.TELEGRAM_CASHBACK_BOT_TOKEN;
 
 async function sendMessage(chatId, text) {
   await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
