@@ -20,6 +20,7 @@ const userRoutes = require('./api/user/userRoutes')
 //For Merchant Related Routes
 const merchantPointRoutes = require('./api/merchant/pointsRoutes')
 const merchantRoutes = require('./api/merchant/merchantRoutes')
+const shopifyRoutes = require('./api/shopify/shopifyRoutes');
 
 
 // CORS configuration
@@ -80,6 +81,7 @@ app.get('/health', (req, res) => {
 app.use('/api', userRoutes)
 app.use('/api/merchant', merchantPointRoutes)
 app.use('/api/merchant', merchantRoutes)
+app.use('/api/shopify', shopifyRoutes);
 app.use ('/api/merchant', require('./api/merchant/couponRoutes'))
 app.use('/api/merchant', require('./api/merchant/rewardRoutes'))
 app.use('/api/merchant', require('./api/merchant/affiliateRoutes'))
@@ -89,6 +91,9 @@ app.use('/api/merchant', require('./api/merchant/promoRoutes'))
 app.use('/api/merchant', require('./api/merchant/hotelRoutes'))
 app.use('/api/merchant', require('./api/merchant/flightRoutes'))
 app.use('/api/merchant', require('./api/merchant/withdrawalRoutes'))
+app.use('/api/merchant', require('./api/merchant/chatCouponRoutes'))
+app.use('/api/merchant', require('./api/merchant/telegramCouponRoute'))
+
 
 
 

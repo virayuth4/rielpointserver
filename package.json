@@ -17,6 +17,7 @@
     "@aws-sdk/client-ses": "^3.696.0",
     "@aws-sdk/lib-storage": "^3.802.0",
     "@aws-sdk/s3-request-presigner": "^3.685.0",
+    "@shopify/shopify-api": "^13.1.0",
     "axios": "^1.19.0",
     "bcrypt": "^6.0.0",
     "cheerio": "^1.0.0",
