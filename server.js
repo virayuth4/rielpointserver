@@ -93,6 +93,9 @@ app.use('/api/merchant', require('./api/merchant/flightRoutes'))
 app.use('/api/merchant', require('./api/merchant/withdrawalRoutes'))
 app.use('/api/merchant', require('./api/merchant/chatCouponRoutes'))
 app.use('/api/merchant', require('./api/merchant/telegramCouponRoute'))
+app.use('/api/merchant', require('./api/admin/merchantLinkRoutes'))
+app.use('/api/merchant', require('./api/merchant/webhookRoutes'))
+
 
 
 

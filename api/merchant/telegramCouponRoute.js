@@ -4,6 +4,82 @@ const router = express.Router();
 const { verifyTelegramInitData } = require("../../lib/telegramAuth");
 const zingoPool = require("../../database/pgZingo");
 
+router.post("/merchant-status", async (req, res) => {
+  try {
+    const { initData } = req.body;
+    if (!verifyTelegramInitData(initData, process.env.TELEGRAM_BOT_TOKEN)) {
+      return res.status(401).json({ error: "Invalid Telegram session" });
+    }
+
+    const params = new URLSearchParams(initData);
+    const telegramUser = JSON.parse(params.get("user"));
+
+    const result = await zingoPool.query(
+      `SELECT m.id, m.name, m.logo_url, m.cashback_rate
+       FROM merchant_telegram_accounts mta
+       JOIN affiliate_merchants m ON m.id = mta.merchant_id
+       WHERE mta.telegram_user_id = $1`,
+      [telegramUser.id]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(200).json({ linked: false });
+    }
+
+    return res.status(200).json({ linked: true, merchant: result.rows[0] });
+  } catch (err) {
+    console.error("Merchant status check error:", err);
+    return res.status(500).json({ error: "Failed to check status" });
+  }
+});
+
+router.post("/link-account", async (req, res) => {
+  try {
+    const { initData, code } = req.body;
+    if (!verifyTelegramInitData(initData, process.env.TELEGRAM_BOT_TOKEN)) {
+      return res.status(401).json({ error: "Invalid Telegram session" });
+    }
+    if (!code) return res.status(400).json({ error: "Please enter a code" });
+
+    const params = new URLSearchParams(initData);
+    const telegramUser = JSON.parse(params.get("user"));
+
+    const existing = await zingoPool.query(
+      `SELECT merchant_id FROM merchant_telegram_accounts WHERE telegram_user_id = $1`,
+      [telegramUser.id]
+    );
+    if (existing.rows[0]) {
+      return res.status(409).json({ error: "This Telegram account is already linked." });
+    }
+
+    const linkResult = await zingoPool.query(
+      `SELECT id, merchant_id FROM merchant_link_codes
+       WHERE code = $1 AND used_at IS NULL AND expires_at > NOW()`,
+      [code.toUpperCase()]
+    );
+    const linkRow = linkResult.rows[0];
+    if (!linkRow) {
+      return res.status(400).json({ error: "That code is invalid or has expired." });
+    }
+
+    await zingoPool.query(
+      `INSERT INTO merchant_telegram_accounts (merchant_id, telegram_user_id) VALUES ($1, $2)`,
+      [linkRow.merchant_id, telegramUser.id]
+    );
+    await zingoPool.query(`UPDATE merchant_link_codes SET used_at = NOW() WHERE id = $1`, [linkRow.id]);
+
+    const merchant = await zingoPool.query(
+      `SELECT id, name, logo_url, cashback_rate FROM affiliate_merchants WHERE id = $1`,
+      [linkRow.merchant_id]
+    );
+
+    return res.status(200).json({ linked: true, merchant: merchant.rows[0] });
+  } catch (err) {
+    console.error("Link account error:", err);
+    return res.status(500).json({ error: "Failed to link account" });
+  }
+});
+
 router.post("/coupon/redeem", async (req, res) => {
     console.log("Telegram Coupon redeem request body:", req.body);
   try {
