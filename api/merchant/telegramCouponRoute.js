@@ -6,6 +6,7 @@ const zingoPool = require("../../database/pgZingo");
 router.post("/merchant-status", async (req, res) => {
   try {
     const { initData } = req.body;
+    console.log("Merchant InitData request body:", req.body);
 
     // --- DEBUG ---
     console.log("DEBUG initData present:", !!initData, "length:", initData?.length);

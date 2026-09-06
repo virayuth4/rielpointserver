@@ -78,6 +78,36 @@ async function sendOTPWithServiceAPI(phoneNumber, otp, fullName, requestNumber =
     }
 }
 
+router.post("/user/anonId",  async (req, res) => {
+  try {
+    const { anonId } = req.body;
+    const userId = req.user.id;
+ 
+    if (!anonId) {
+      return res.status(400).json({ error: "anonId is required" });
+    }
+ 
+    await zingoPool.query(
+      `INSERT INTO anon_accounts (anon_id, user_id)
+       VALUES ($1::uuid, $2)
+       ON CONFLICT (anon_id) DO UPDATE SET user_id = EXCLUDED.user_id`,
+      [anonId, userId]
+    );
+ 
+    const backfill = await zingoPool.query(
+      `UPDATE affiliate_clicks SET user_id = $2
+       WHERE anon_id = $1::uuid AND user_id IS NULL
+       RETURNING click_id`,
+      [anonId, userId]
+    );
+ 
+    return res.json({ ok: true, backfilled_clicks: backfill.rowCount });
+  } catch (err) {
+    console.error("link anonId error:", err);
+    return res.status(500).json({ error: "Failed to link anonId" });
+  }
+});
+
 router.get('/user/profile', authenticateFirebaseToken, async (req, res) => {
     console.log('riel point user route hit')
     // console.log('Firebase UID from user-profile route', req.user.uid)
@@ -99,6 +129,64 @@ router.get('/user/profile', authenticateFirebaseToken, async (req, res) => {
         }
 
         const userData = result.rows[0];
+
+        const sessionInfo = {
+            uid: req.user.uid,
+            email: req.user.email,
+            emailVerified: req.user.email_verified,
+            ...(req.user.name && { name: req.user.name }),
+            ...(req.user.picture && { picture: req.user.picture }),
+            iat: req.user.iat,
+            exp: req.user.exp,
+            aud: req.user.aud,
+            iss: req.user.iss
+        };
+
+        res.status(200).json({
+            user: userData,
+            session: sessionInfo
+        });
+
+    } catch (error) {
+        console.error('Error fetching user profile:', error);
+        res.status(500).json({
+            error: 'Internal Server Error',
+            message: 'An unexpected error occurred'
+        });
+    }
+});
+
+router.get('/merchant/profile', authenticateFirebaseToken, async (req, res) => {
+    console.log('riel point user + merchant route hit')
+
+    try {
+        const query = `
+            SELECT
+                ru.*,
+                CASE
+                    WHEN am.owner_id IS NOT NULL THEN row_to_json(am)
+                    ELSE NULL
+                END AS affiliate_merchant
+            FROM rielpoint_users ru
+            LEFT JOIN affiliate_merchants am ON am.owner_id = ru.id
+            WHERE ru.id = $1
+        `;
+        const result = await zingoPool.query(query, [req.user.id]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                error: "Not Found",
+                message: "User not found"
+            });
+        }
+
+        const { affiliate_merchant, ...userFields } = result.rows[0];
+
+        const userData = {
+            ...userFields,
+            role: affiliate_merchant ? "affiliate-merchant" : userFields.role ?? null,
+            affiliate_merchant,
+        };
 
         const sessionInfo = {
             uid: req.user.uid,
@@ -279,7 +367,7 @@ router.post("/user/registration/otp/confirmation/:phoneNumber", async (req, res)
 
 
 router.post('/create-user-profile', async (req, res) => {
-  const { email, fullName, referredBy } = req.body;
+  const { email, fullName, referredBy, anonId } = req.body;
   const points = 0;
 
   // Phone-based signups use a synthetic placeholder email: 855<phone>@phone.com.
@@ -299,15 +387,45 @@ router.post('/create-user-profile', async (req, res) => {
     .replace(/[^a-z0-9 ]/g, '')
     .replace(/\s+/g, '_')}_${rawPhoneNumber || Date.now()}`;
 
-    console.log("Creating user profile with email:", email, resolvedFullName, referredBy);
+    console.log("Creating user profile with ", email, resolvedFullName, referredBy, anonId);
+
+  // Basic sanity check — don't let a malformed client value hit the DB as a bad UUID
+  const isValidAnonId = typeof anonId === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(anonId);
+
+  const linkAnonId = async (userId) => {
+    if (!isValidAnonId) return;
+    try {
+      // One anonId should only ever point to one user. If it's already linked
+      // (e.g. duplicate signup attempt, or the row was created by an earlier
+      // click-logging step before signup existed), update it rather than
+      // failing — but never let a second, different user steal an anonId
+      // that's already linked to someone else.
+      await zingoPool.query(
+        `INSERT INTO rielpoint_anon_users (anon_id, user_id, linked_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (anon_id) DO UPDATE
+           SET user_id = EXCLUDED.user_id, linked_at = NOW()
+           WHERE rielpoint_anon_users.user_id = EXCLUDED.user_id`,
+        [anonId, userId]
+      );
+    } catch (linkErr) {
+      // Don't fail account creation just because linking had an issue —
+      // log it and move on, this is best-effort attribution, not core signup.
+      console.error('Failed to link anonId to user:', linkErr);
+    }
+  };
+
   try {
     const checkUserQuery = 'SELECT * FROM rielpoint_users WHERE email = $1';
     const checkUserResult = await zingoPool.query(checkUserQuery, [email]);
 
     if (checkUserResult.rows.length > 0) {
+      const existingUser = checkUserResult.rows[0];
+      await linkAnonId(existingUser.id);
       return res.status(200).json({
         message: 'User profile already exists',
-        user: { ...checkUserResult.rows[0], isNew: false }
+        user: { ...existingUser, isNew: false }
       });
     }
 
@@ -332,10 +450,13 @@ router.post('/create-user-profile', async (req, res) => {
     ];
 
     const insertResult = await zingoPool.query(insertUserQuery, insertUserValues);
+    const newUser = insertResult.rows[0];
+
+    await linkAnonId(newUser.id);
 
     res.status(200).json({
       message: 'User profile created successfully',
-      user: { ...insertResult.rows[0], isNew: true }
+      user: { ...newUser, isNew: true }
     });
   } catch (error) {
     console.error('Error in create-user-profile route:', error);
