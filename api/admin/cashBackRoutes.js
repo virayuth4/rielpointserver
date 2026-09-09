@@ -271,36 +271,57 @@ router.get('/cashback/transactions/all', authenticateFirebaseToken, requireAdmin
 
 router.post('/cashback/add', authenticateFirebaseToken, async (req, res) => {
   const {
-    merchantId, // client-supplied — validated below, never trusted outright
+    merchantId,
     phone,
+    email,
+    anonId,
     externalTransactionId,
     orderAmount,
     currency,
     commission,
     cashbackRate,
-    clickId,        // optional — only set if this order is tied to a tracked affiliate click
-    transactionAt,  // optional — when the underlying order happened; defaults to now
+    clickId,
+    transactionAt,
   } = req.body;
- 
+
   console.log(
     "Staff Id", req.user.id, "is attempting to credit cashback:",
-    { merchantId, phone, externalTransactionId, orderAmount, currency, commission, cashbackRate }
+    { merchantId, phone, email, anonId, externalTransactionId, orderAmount, currency, commission, cashbackRate }
   );
- 
+
   if (!externalTransactionId) {
     return res.status(400).json({ message: 'externalTransactionId is required.' });
   }
- 
+
+  // ---- Require exactly one identifier: phone, email, or anonId ----
+  const provided = { phone, email, anonId };
+  const activeKeys = Object.keys(provided).filter((k) => provided[k]);
+
+  if (activeKeys.length !== 1) {
+    return res.status(400).json({ message: 'Provide exactly one identifier: phone, email, or anonId.' });
+  }
+  const identifierType = activeKeys[0];
+  const identifierValue = String(provided[identifierType]).trim();
+
+  if (identifierType === 'phone' && identifierValue.length < 8) {
+    return res.status(400).json({ message: 'A valid phone number is required.' });
+  }
+  if (identifierType === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifierValue)) {
+    return res.status(400).json({ message: 'A valid email address is required.' });
+  }
+  if (identifierType === 'anonId' && identifierValue.length < 4) {
+    return res.status(400).json({ message: 'A valid anon ID is required.' });
+  }
+
   const client = await zingoPool.connect();
- 
+
   try {
- 
-    // ---- Idempotency: external_transaction_id is unique per merchant ----
+    // ---- Idempotency ----
     const existing = await client.query(
-      `SELECT id, created_at, merchant_id, user_id, order_amount, currency,
-                    commission_amount, cashback_rate, cashback_amount, status, transaction_at
-            FROM affiliate_transactions
-            WHERE merchant_id = $1 AND external_transaction_id = $2`,
+      `SELECT id, created_at, merchant_id, user_id, anon_id, order_amount, currency,
+              commission_amount, cashback_rate, cashback_amount, status, transaction_at
+       FROM affiliate_transactions
+       WHERE merchant_id = $1 AND external_transaction_id = $2`,
       [merchantId, externalTransactionId]
     );
     if (existing.rows.length > 0) {
@@ -310,6 +331,7 @@ router.post('/cashback/add', authenticateFirebaseToken, async (req, res) => {
         createdAt: tx.created_at,
         merchantId: tx.merchant_id,
         userId: tx.user_id,
+        anonId: tx.anon_id,
         orderAmount: tx.order_amount,
         currency: tx.currency,
         commission: tx.commission_amount,
@@ -320,26 +342,33 @@ router.post('/cashback/add', authenticateFirebaseToken, async (req, res) => {
         idempotent: true,
       });
     }
- 
-    // ---- Resolve user_id from phone ----
-    const userLookup = await client.query(
-      `SELECT id, fullname FROM rielpoint_users WHERE phone_number = $1`,
-      [phone]
-    );
-    if (userLookup.rows.length === 0) {
-      return res.status(404).json({ message: 'No user found with this phone number.' });
+
+    // ---- Resolve user_id (phone/email) OR use anon_id directly ----
+    let userId = null;
+    let resolvedAnonId = null;
+    let userName = 'Customer';
+
+    if (identifierType === 'anonId') {
+      resolvedAnonId = identifierValue;
+      // No lookup — anon users don't have a rielpoint_users row.
+    } else {
+      const column = identifierType === 'phone' ? 'phone_number' : 'email';
+      const userLookup = await client.query(
+        `SELECT id, fullname FROM rielpoint_users WHERE ${column} = $1 LIMIT 1`,
+        [identifierValue]
+      );
+      if (userLookup.rows.length === 0) {
+        return res.status(404).json({ message: 'No user found matching the provided identifier.' });
+      }
+      userId = userLookup.rows[0].id;
+      userName = userLookup.rows[0].fullname ?? 'Customer';
     }
-    const userId = userLookup.rows[0].id;
-    const userName = userLookup.rows[0].name ?? 'Customer';
- 
+
     // ---- Validation ----
     const numericOrderAmount = Number(orderAmount);
     const numericCommission = Number(commission);
     const numericCashbackRate = Number(cashbackRate);
- 
-    if (!phone || phone.length < 8) {
-      return res.status(400).json({ message: 'A valid phone number is required.' });
-    }
+
     if (!Number.isFinite(numericOrderAmount) || numericOrderAmount <= 0) {
       return res.status(400).json({ message: 'Order amount must be a positive number.' });
     }
@@ -352,62 +381,53 @@ router.post('/cashback/add', authenticateFirebaseToken, async (req, res) => {
     if (!ALLOWED_CASHBACK_RATES.includes(numericCashbackRate)) {
       return res.status(400).json({ message: `Cashback rate must be one of: ${ALLOWED_CASHBACK_RATES.join(', ')}.` });
     }
- 
-    // amount mirrors order_amount (kept as a separate column per schema)
+
     const amount = numericOrderAmount;
     const cashbackAmount = Math.round(numericCommission * (numericCashbackRate / 100) * 100) / 100;
- 
+
     if (cashbackAmount <= 0) {
       return res.status(400).json({ message: 'Calculated cashback amount must be greater than zero.' });
     }
- 
+
     await client.query('BEGIN');
- 
+
     const txResult = await client.query(
       `INSERT INTO affiliate_transactions
-                (merchant_id, user_id, click_id, external_transaction_id, order_amount,
-                commission_amount,  currency, cashback_rate, cashback_amount, status, transaction_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            RETURNING id, created_at`,
+              (merchant_id, user_id, anon_id, click_id, external_transaction_id, order_amount,
+               commission_amount, currency, cashback_rate, cashback_amount, status, transaction_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       RETURNING id, created_at`,
       [
         merchantId,
         userId,
+        resolvedAnonId,
         clickId || null,
         externalTransactionId,
         numericOrderAmount,
         numericCommission,
- 
         currency,
         numericCashbackRate,
         cashbackAmount,
-        'pending', // confirmation is handled by a separate route
+        'pending',
         transactionAt || new Date(),
       ]
     );
- 
-    // Record the creation event itself in the ledger. from_status is
-    // NOT NULL on this table, so we use the 'created' sentinel to mean
-    // "didn't exist before" rather than an actual prior status. This is
-    // the only place the initial estimated cashback amount (computed from
-    // merchant-reported commission) is preserved once
-    // /cashback/transactions/:id/status overwrites
-    // affiliate_transactions.cashback_amount at merchant_confirmed —
-    // without this row there's no way to recover what the estimate was
-    // to diff against the real, merchant-confirmed amount later.
+
     await client.query(
       `INSERT INTO affiliate_transaction_status_ledger
         (affiliate_transaction_id, from_status, to_status, cashback_amount, currency, reason, changed_by)
-      VALUES ($1, 'created', 'pending', $2, $3, NULL, $4)`,
+       VALUES ($1, 'created', 'pending', $2, $3, NULL, $4)`,
       [txResult.rows[0].id, cashbackAmount, currency, req.user?.id]
     );
- 
+
     await client.query('COMMIT');
- 
+
     return res.status(200).json({
       transactionId: txResult.rows[0].id,
       createdAt: txResult.rows[0].created_at,
       merchantId,
       userId,
+      anonId: resolvedAnonId,
       userName,
       orderAmount: numericOrderAmount,
       currency,

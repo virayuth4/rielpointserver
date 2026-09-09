@@ -41,7 +41,9 @@ const loadEnvironmentVariables = () => {
         "https://rielpoint.vercel.app",
         "https://rielpoint-git-main-virayuth-lims-projects.vercel.app",
         "https://rielpoint.com",
-        "https://www.rielpoint.com"
+        "https://www.rielpoint.com",
+        "https://www.eatdoko.com",
+        "httos://eatdoko.com"
         
     ];
 

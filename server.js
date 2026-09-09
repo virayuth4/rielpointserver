@@ -96,6 +96,9 @@ app.use('/api/merchant', require('./api/merchant/telegramCouponRoute'))
 app.use('/api/merchant', require('./api/admin/merchantLinkRoutes'))
 app.use('/api/merchant', require('./api/merchant/webhookRoutes'))
 
+// For EatDoko
+app.use('/api/eatdoko', require('./api/eatdoko/spinRoutes'))
+
 
 
 
