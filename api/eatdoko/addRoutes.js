@@ -67,13 +67,26 @@ function handleMulter(req, res, next) {
   });
 }
 
+
+const establishmentsCache = new Map();
+const CACHE_TTL_MS = 600 * 1000;
 // ---------------------------------------------------------------------------
 // GET /establishments  (list all, optional ?category=)
 // ---------------------------------------------------------------------------
 router.get('/establishments', async (req, res) => {
-    console.log("Getting all Establishments")
   try {
     const { category } = req.query;
+    const cacheKey = (category && category.trim().toLowerCase()) || 'all';
+
+    const cached = establishmentsCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+      const ageMs = Date.now() - cached.ts;
+      console.log(`[establishments] CACHE HIT key="${cacheKey}" age=${ageMs}ms`);
+      res.set('Cache-Control', 'public, max-age=30');
+      return res.status(200).json(cached.payload);
+    }
+
+    console.log(`[establishments] CACHE MISS key="${cacheKey}" (${cached ? 'expired' : 'not found'}) — querying DB`);
 
     const conditions = [];
     const values = [];
@@ -100,7 +113,13 @@ router.get('/establishments', async (req, res) => {
     );
     const categories = categoriesResult.rows.map((r) => r.category);
 
-    return res.status(200).json({ data: rows, categories });
+    const payload = { data: rows, categories };
+    establishmentsCache.set(cacheKey, { payload, ts: Date.now() });
+
+    console.log(`[establishments] CACHE SET key="${cacheKey}" rows=${rows.length}`);
+
+    res.set('Cache-Control', 'public, max-age=30');
+    return res.status(200).json(payload);
   } catch (error) {
     console.error('Error fetching establishments:', error);
     return res.status(500).json({ error: 'Failed to fetch establishments. Please try again.' });

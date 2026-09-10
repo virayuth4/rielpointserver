@@ -26,7 +26,7 @@ const shopifyRoutes = require('./api/shopify/shopifyRoutes');
 // CORS configuration
 const corsOptions = {
   origin: config.CORS_ORIGINS,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: [
     'Content-Type', 
     'x-client-type',
