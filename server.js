@@ -98,6 +98,7 @@ app.use('/api/merchant', require('./api/merchant/webhookRoutes'))
 
 // For EatDoko
 app.use('/api/eatdoko', require('./api/eatdoko/spinRoutes'))
+app.use('/api/eatdoko', require('./api/eatdoko/addRoutes.js'))
 
 
 
