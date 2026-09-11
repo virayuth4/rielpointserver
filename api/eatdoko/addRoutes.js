@@ -12,6 +12,40 @@ const multer = require('multer');
 const { sanitizeProductDescription } = require("../../utils/sanatizeHtml");
 const { invalidateFeedCache } = require("../../utils/feedCacheService");
 
+async function sendEstablishmentListingTelegramNotification(data) {
+  const { name, location, description } = data;
+
+  const message =
+    `☕ New Cafe Recommendation\n\n` +
+    `Cafe Name: ${name || "N/A"}\n` +
+    `Location: ${location || "N/A"}\n` +
+    (description ? `${description}\n` : "");
+
+    console.log("Message", message)
+
+  try {
+    const botToken = String(process.env.TELEGRAM_SUPPORT_BOT_TOKEN?.trim());
+    const chatId = Number(process.env.TELEGRAM_CHAT_ID?.trim());
+
+    if (!botToken || !chatId) {
+      throw new Error("Telegram bot token or chat ID is missing");
+    }
+
+    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+
+    await axios.post(url, {
+      chat_id: chatId,
+      text: message,
+    });
+
+    console.log("Establishment recommendation sent to Telegram successfully");
+    return { success: true };
+  } catch (error) {
+    console.error("Error sending Telegram notification:", error.response?.data || error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 const TABLE = "eatdoko_establishments";
 const MAX_IMAGES = 10;
 
@@ -402,6 +436,36 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
       return res.status(400).json({ error: 'That slug is already in use by another establishment.' });
     }
     return res.status(500).json({ error: 'Failed to process establishment update. Please try again.' });
+  }
+});
+
+
+router.post('/establishments/listing/request', async (req, res) => {
+  try {
+    const requestData = req.body;
+
+    // Send the notification without saving to any DB
+    const result = await sendEstablishmentListingTelegramNotification(requestData);
+
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send listing request notification',
+        error: result.error
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Establishment listing request received and forwarded successfully'
+    });
+  } catch (error) {
+    console.error('Listing request route error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
   }
 });
 
