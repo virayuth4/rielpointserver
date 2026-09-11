@@ -46,6 +46,48 @@ async function sendEstablishmentListingTelegramNotification(data) {
   }
 }
 
+async function sendPartnerRequestTelegramNotification(partnerRequest) {
+  const {
+    cafeName,
+    location,
+    tier,
+    googleMapsUrl,
+    contactTelegram,
+    notes,
+  } = partnerRequest;
+
+  const message =
+    `🤝 New Cafe Partner Request\n\n` +
+    `Cafe Name: ${cafeName || "N/A"}\n` +
+    `Tier: ${tier || "Free"}\n` +
+    `Location: ${location || "N/A"}\n` +
+    `Contact Telegram: ${contactTelegram || "N/A"}\n` +
+    `Maps URL: ${googleMapsUrl || "N/A"}\n` +
+    (notes ? `Notes: ${notes}\n` : "");
+
+  try {
+    const botToken = String(process.env.TELEGRAM_SUPPORT_BOT_TOKEN?.trim());
+    const chatId = Number(process.env.TELEGRAM_CHAT_ID?.trim());
+
+    if (!botToken || !chatId) {
+      throw new Error("Telegram bot token or chat ID is missing");
+    }
+
+    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+
+    await axios.post(url, {
+      chat_id: chatId,
+      text: message,
+    });
+
+    console.log("Partner request sent to Telegram successfully");
+    return { success: true };
+  } catch (error) {
+    console.error("Error sending Telegram notification:", error.response?.data || error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 const TABLE = "eatdoko_establishments";
 const MAX_IMAGES = 10;
 
@@ -468,5 +510,32 @@ router.post('/establishments/listing/request', async (req, res) => {
     });
   }
 });
+
+router.post('/establishment/partner/request', async (req,res) => {
+  try {
+    const requestData = req.body;
+    const result = await sendPartnerRequestTelegramNotification(requestData);
+
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to send partner notification",
+        error: result.error,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Partner request sent successfully",
+    });
+  } catch (error) {
+    console.error("Partner route error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+})
 
 module.exports = router;
