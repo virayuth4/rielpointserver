@@ -2,6 +2,20 @@ const express = require("express");
 const zingoPool = require("../../database/pgZingo");
 const router = express.Router();
 
+router.get('/history/all', async (req, res) => {
+  console.log("Get global histories")
+  try {
+    const result = await zingoPool.query(
+      `SELECT * FROM eatdoko_history ORDER BY created_at DESC LIMIT 50` 
+    )
+    return res.status(201).json({ success: true, entries: result.rows });
+
+  } catch (err) {
+    console.error("Error in fetching history", err)
+    return res.status(500).json({error: 'Failed to fetch global history'})
+  }
+})
+
 router.post("/history/add", async (req, res) => {
   console.log("Eat Doko History Add Route Hit");
 
@@ -17,7 +31,7 @@ router.post("/history/add", async (req, res) => {
 
     const result = await zingoPool.query(
       `INSERT INTO eatdoko_history
-        (user_id, cafe_id, name, branch_location, logo_url, accent_color)
+        (user_id, shop_id, name, branch_location, logo_url, accent_color)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, created_at`,
       [userId, id, name, branch_location ?? null, logo_url ?? null, accentColor ?? null]
@@ -63,5 +77,7 @@ router.patch("/history/:historyId/visited", async (req, res) => {
     return res.status(500).json({ error: "Failed to update visited status" });
   }
 });
+
+
 
 module.exports = router;
