@@ -7,7 +7,7 @@ const router = express.Router();
 
 
 const seoCafesCache = new Map();
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1hr, matches ISR revalidate
+const CACHE_TTL_MS = 600 * 60 * 1000; // 1hr, matches ISR revalidate
 
 router.get('/seo/best-cafes', async (req, res) => {
     console.log("seo route hit")
