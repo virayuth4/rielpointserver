@@ -201,7 +201,6 @@ router.get('/establishments', async (req, res) => {
     return res.status(500).json({ error: 'Failed to fetch establishments. Please try again.' });
   }
 });
-
 // ---------------------------------------------------------------------------
 // GET /establishment/eatdoko-establishments/:id
 // ---------------------------------------------------------------------------
