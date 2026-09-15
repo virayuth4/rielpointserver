@@ -90,6 +90,8 @@ async function sendPartnerRequestTelegramNotification(partnerRequest) {
 
 const TABLE = "eatdoko_establishments";
 const MAX_IMAGES = 10;
+const PRODUCTS_TABLE = 'eatdoko_products';
+const ALLOWED_CATEGORIES = ['Drinks', 'Food'];
 
 function slugify(text) {
   return (text || "")
@@ -110,6 +112,15 @@ async function isSlugTaken(slug, excludeId = null) {
   return result.rowCount > 0;
 }
 
+async function isProductSlugTaken(shopId, slug, excludeId = null) {
+  const query = excludeId
+    ? `SELECT 1 FROM "${PRODUCTS_TABLE}" WHERE "shop_id" = $1 AND "slug" = $2 AND "id" != $3`
+    : `SELECT 1 FROM "${PRODUCTS_TABLE}" WHERE "shop_id" = $1 AND "slug" = $2`;
+  const values = excludeId ? [shopId, slug, excludeId] : [shopId, slug];
+  const result = await zingoPool.query(query, values);
+  return result.rowCount > 0;
+}
+
 // Safely parse a JSON array of existing image urls sent from the frontend
 function parseExistingImagePaths(raw) {
   if (!raw) return [];
@@ -124,6 +135,8 @@ function parseExistingImagePaths(raw) {
 const uploadFields = upload.fields([
   { name: 'logo', maxCount: 1 },
   { name: 'images', maxCount: MAX_IMAGES },
+  { name: 'image', maxCount: 1 },
+  
 ]);
 
 function handleMulter(req, res, next) {
@@ -536,5 +549,269 @@ router.post('/establishment/partner/request', async (req,res) => {
     });
   }
 })
+
+// ---------------------------------------------------------------------------
+// GET /product/eatdoko-products/:id
+// ---------------------------------------------------------------------------
+router.get('/product/eatdoko-products/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+ 
+    if (!/^\d+$/.test(id)) {
+      return res.status(400).json({ error: 'Invalid product id.' });
+    }
+ 
+    const result = await zingoPool.query(
+      `SELECT * FROM "${PRODUCTS_TABLE}" WHERE "id" = $1`,
+      [id]
+    );
+ 
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Product not found.' });
+    }
+ 
+    return res.status(200).json({ data: result.rows[0] });
+  } catch (error) {
+    console.error('Error fetching product:', error);
+    return res.status(500).json({ error: 'Failed to fetch product. Please try again.' });
+  }
+});
+ 
+// ---------------------------------------------------------------------------
+// POST /products/add
+// ---------------------------------------------------------------------------
+router.post('/products/add', handleMulter, async (req, res) => {
+  console.log("adding products")
+  try {
+    const {
+      shop_id,
+      name,
+      category,
+      subcategory,
+      description,
+      price,
+      is_sponsored,
+      is_available,
+    } = req.body;
+ 
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Name is required.' });
+    }
+ 
+    if (!shop_id || !/^\d+$/.test(String(shop_id))) {
+      return res.status(400).json({ error: 'A valid shop is required.' });
+    }
+ 
+    if (!category || !ALLOWED_CATEGORIES.includes(category)) {
+      return res.status(400).json({ error: `Category must be one of: ${ALLOWED_CATEGORIES.join(', ')}.` });
+    }
+ 
+    let parsedPrice = null;
+    if (price !== undefined && price !== '') {
+      parsedPrice = Number(price);
+      if (Number.isNaN(parsedPrice) || parsedPrice < 0) {
+        return res.status(400).json({ error: 'Price must be a valid non-negative number.' });
+      }
+    }
+ 
+    const slug = (req.body.slug || slugify(name)).trim().toLowerCase();
+ 
+    if (!slug) {
+      return res.status(400).json({ error: 'Slug is required.' });
+    }
+ 
+    if (await isProductSlugTaken(shop_id, slug)) {
+      return res.status(400).json({ error: 'That slug is already in use by another product at this shop.' });
+    }
+ 
+    const imageFile = req.files?.['image']?.[0];
+    let imageUrl = null;
+    if (imageFile) {
+      const uploaded = await uploadMediaFilesToS3([imageFile], slug, 'image', {
+        pathPrefix: 'eatdoko/products',
+      });
+      imageUrl = uploaded[0] || null;
+    }
+ 
+    const query = `
+      INSERT INTO "${PRODUCTS_TABLE}" (
+        "shop_id", "name", "slug", "category", "subcategory",
+        "description", "price", "image_url", "is_sponsored", "is_available"
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING id
+    `;
+    const values = [
+      shop_id,
+      name.trim(),
+      slug,
+      category,
+      subcategory ? subcategory.trim() : null,
+      description ? description.trim() : null,
+      parsedPrice,
+      imageUrl,
+      is_sponsored === 'true' || is_sponsored === true,
+      is_available === undefined ? true : (is_available === 'true' || is_available === true),
+    ];
+ 
+    const result = await zingoPool.query(query, values);
+    const productId = result.rows[0].id;
+ 
+    invalidateFeedCache?.();
+ 
+    return res.status(200).json({
+      message: 'Product created successfully',
+      data: { productId, image_url: imageUrl },
+    });
+  } catch (error) {
+    console.error('Error processing product creation:', error);
+    if (error.code === '23505') {
+      return res.status(400).json({ error: 'That slug is already in use by another product at this shop.' });
+    }
+    if (error.code === '23503') {
+      return res.status(400).json({ error: 'That shop does not exist.' });
+    }
+    return res.status(500).json({ error: 'Failed to process product creation. Please try again.' });
+  }
+});
+ 
+// ---------------------------------------------------------------------------
+// PUT /product/eatdoko-products/:id
+// ---------------------------------------------------------------------------
+router.put('/products/eatdoko-products/:id', handleMulter, async (req, res) => {
+  console.log("editing products")
+  const { id } = req.params;
+ 
+  if (!/^\d+$/.test(id)) {
+    return res.status(400).json({ error: 'Invalid product id.' });
+  }
+ 
+  try {
+    const existingResult = await zingoPool.query(
+      `SELECT * FROM "${PRODUCTS_TABLE}" WHERE "id" = $1`,
+      [id]
+    );
+ 
+    if (existingResult.rowCount === 0) {
+      return res.status(404).json({ error: 'Product not found.' });
+    }
+ 
+    const existing = existingResult.rows[0];
+ 
+    const {
+      shop_id,
+      name,
+      category,
+      subcategory,
+      description,
+      price,
+      is_sponsored,
+      is_available,
+      existing_image_url,
+    } = req.body;
+ 
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Name is required.' });
+    }
+ 
+    const effectiveShopId = shop_id || existing.shop_id;
+    if (!/^\d+$/.test(String(effectiveShopId))) {
+      return res.status(400).json({ error: 'A valid shop is required.' });
+    }
+ 
+    const effectiveCategory = category || existing.category;
+    if (!ALLOWED_CATEGORIES.includes(effectiveCategory)) {
+      return res.status(400).json({ error: `Category must be one of: ${ALLOWED_CATEGORIES.join(', ')}.` });
+    }
+ 
+    let parsedPrice = existing.price;
+    if (price !== undefined) {
+      parsedPrice = price === '' ? null : Number(price);
+      if (parsedPrice !== null && (Number.isNaN(parsedPrice) || parsedPrice < 0)) {
+        return res.status(400).json({ error: 'Price must be a valid non-negative number.' });
+      }
+    }
+ 
+    const slug = (req.body.slug || slugify(name)).trim().toLowerCase();
+ 
+    if (!slug) {
+      return res.status(400).json({ error: 'Slug is required.' });
+    }
+ 
+    if (await isProductSlugTaken(effectiveShopId, slug, id)) {
+      return res.status(400).json({ error: 'That slug is already in use by another product at this shop.' });
+    }
+ 
+    // ---- Image ----
+    const imageFile = req.files?.['image']?.[0];
+    let imageUrl = existing.image_url;
+ 
+    if (imageFile) {
+      const uploaded = await uploadMediaFilesToS3([imageFile], slug, 'image', {
+        pathPrefix: 'eatdoko/products',
+      });
+      imageUrl = uploaded[0] || null;
+ 
+      if (existing.image_url) {
+        await deleteFileFromS3?.(existing.image_url).catch((e) =>
+          console.error('Failed to delete old product image from S3:', e)
+        );
+      }
+    } else if (existing.image_url && !existing_image_url) {
+      await deleteFileFromS3?.(existing.image_url).catch((e) =>
+        console.error('Failed to delete old product image from S3:', e)
+      );
+      imageUrl = null;
+    }
+ 
+    const query = `
+      UPDATE "${PRODUCTS_TABLE}"
+      SET "shop_id" = $1,
+          "name" = $2,
+          "slug" = $3,
+          "category" = $4,
+          "subcategory" = $5,
+          "description" = $6,
+          "price" = $7,
+          "image_url" = $8,
+          "is_sponsored" = $9,
+          "is_available" = $10
+      WHERE "id" = $11
+      RETURNING id
+    `;
+    const values = [
+      effectiveShopId,
+      name.trim(),
+      slug,
+      effectiveCategory,
+      subcategory !== undefined ? (subcategory ? subcategory.trim() : null) : existing.subcategory,
+      description !== undefined ? (description ? description.trim() : null) : existing.description,
+      parsedPrice,
+      imageUrl,
+      is_sponsored !== undefined ? (is_sponsored === 'true' || is_sponsored === true) : existing.is_sponsored,
+      is_available !== undefined ? (is_available === 'true' || is_available === true) : existing.is_available,
+      id,
+    ];
+ 
+    await zingoPool.query(query, values);
+ 
+    invalidateFeedCache?.();
+ 
+    return res.status(200).json({
+      message: 'Product updated successfully',
+      data: { productId: id, image_url: imageUrl },
+    });
+  } catch (error) {
+    console.error('Error processing product update:', error);
+    if (error.code === '23505') {
+      return res.status(400).json({ error: 'That slug is already in use by another product at this shop.' });
+    }
+    if (error.code === '23503') {
+      return res.status(400).json({ error: 'That shop does not exist.' });
+    }
+    return res.status(500).json({ error: 'Failed to process product update. Please try again.' });
+  }
+});
+
 
 module.exports = router;
