@@ -132,6 +132,32 @@ function parseExistingImagePaths(raw) {
   }
 }
 
+function normalizeField(value) {
+  if (Array.isArray(value)) value = value[0];
+  if (value === undefined || value === null) return '';
+  return String(value).trim();
+}
+
+function parseCuisineInput(raw, category) {
+  console.log("raw", raw)
+  console.log("category", category)
+  if (normalizeField(category).toLowerCase() !== 'restaurant') return null;
+
+  const rawValue = Array.isArray(raw) ? raw[0] : raw;
+  if (!rawValue) return null;
+
+  let list;
+  try {
+    const parsed = JSON.parse(rawValue);
+    list = Array.isArray(parsed) ? parsed : String(rawValue).split(',');
+  } catch {
+    list = String(rawValue).split(',');
+  }
+
+  const cleaned = list.map((c) => String(c).trim().toLowerCase()).filter(Boolean);
+  return cleaned.length ? cleaned : null;
+}       
+
 const uploadFields = upload.fields([
   { name: 'logo', maxCount: 1 },
   { name: 'images', maxCount: MAX_IMAGES },
@@ -158,7 +184,7 @@ function handleMulter(req, res, next) {
 
 
 const establishmentsCache = new Map();
-const CACHE_TTL_MS = 600 * 1000;
+const CACHE_TTL_MS = 60  * 1000;
 // ---------------------------------------------------------------------------
 // GET /establishments  (list all, optional ?category=)
 // ---------------------------------------------------------------------------
@@ -166,8 +192,8 @@ router.get('/establishments', async (req, res) => {
   try {
     const { category } = req.query;
     const cacheKey = (category && category.trim().toLowerCase()) || 'all';
-
     const cached = establishmentsCache.get(cacheKey);
+
     if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
       const ageMs = Date.now() - cached.ts;
       console.log(`[establishments] CACHE HIT key="${cacheKey}" age=${ageMs}ms`);
@@ -181,8 +207,8 @@ router.get('/establishments', async (req, res) => {
     const values = [];
 
     if (category && category.trim() && category.trim().toLowerCase() !== 'all') {
-      values.push(category.trim());
-      conditions.push(`"category" = $${values.length}`);
+      values.push(`%${category.trim()}%`);
+      conditions.push(`"category" ILIKE $${values.length}`);
     }
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -204,7 +230,6 @@ router.get('/establishments', async (req, res) => {
 
     const payload = { data: rows, categories };
     establishmentsCache.set(cacheKey, { payload, ts: Date.now() });
-
     console.log(`[establishments] CACHE SET key="${cacheKey}" rows=${rows.length}`);
 
     res.set('Cache-Control', 'public, max-age=30');
@@ -263,7 +288,9 @@ router.post('/establishments/add', handleMulter, async (req, res) => {
       instagram,
       is_sponsored,
       in_roll,
+      cuisine,
     } = req.body;
+        console.log("req body", req.body)
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Name is required.' });
@@ -300,31 +327,35 @@ router.post('/establishments/add', handleMulter, async (req, res) => {
       });
     }
 
-    const query = `
-      INSERT INTO "${TABLE}" (
-        "name", "slug", "category", "branch_location", "description",
-        "logo_url", "image_paths", "map", "accent", "instagram", "is_sponsored", "in_roll"
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-      RETURNING id
-    `;
-    const values = [
-      name.trim(),
-      slug,
-      category ? category.trim() : null,
-      branch_location ? branch_location.trim() : null,
-      description ? description.trim() : null,
-      logoUrl,
-      JSON.stringify(imagePaths),
-      map ? map.trim() : null,
-      accent ? accent.trim() : null,
-      instagram ? instagram.trim() : null,
-      is_sponsored === 'true' || is_sponsored === true,
-      in_roll !== undefined ? Boolean(in_roll) : true,
-    ];
+    const cuisineValue = parseCuisineInput(cuisine, category);
 
+
+    const query = `
+  INSERT INTO "${TABLE}" (
+    "name", "slug", "category", "branch_location", "description",
+    "logo_url", "image_paths", "map", "accent", "instagram", "is_sponsored", "in_roll", "cuisines"
+  )
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+  RETURNING id
+`;
+const values = [
+  name.trim(),
+  slug,
+  category ? category.trim() : null,
+  branch_location ? branch_location.trim() : null,
+  description ? description.trim() : null,
+  logoUrl,
+  JSON.stringify(imagePaths),
+  map ? map.trim() : null,
+  accent ? accent.trim() : null,
+  instagram ? instagram.trim() : null,
+  is_sponsored === 'true' || is_sponsored === true,
+  in_roll !== undefined ? Boolean(in_roll) : true,
+  cuisineValue ? JSON.stringify(cuisineValue) : null,
+];
     const result = await zingoPool.query(query, values);
     const establishmentId = result.rows[0].id;
+
 
     invalidateFeedCache?.();
 
@@ -376,6 +407,7 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
       in_roll,
       existing_logo_url,
       existing_image_paths, // JSON-stringified array of urls the user chose to KEEP
+      cuisine,
     } = req.body;
 
     if (!name || !name.trim()) {
@@ -442,39 +474,43 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
     }
 
     const finalImagePaths = [...keptImagePaths, ...uploadedImagePaths];
+    const cuisineValue = parseCuisineInput(cuisine, category);
 
-    const query = `
-      UPDATE "${TABLE}"
-      SET "name" = $1,
-          "slug" = $2,
-          "category" = $3,
-          "branch_location" = $4,
-          "description" = $5,
-          "logo_url" = $6,
-          "image_paths" = $7,
-          "map" = $8,
-          "accent" = $9,
-          "instagram" = $10,
-          "is_sponsored" = $11,
-          "in_roll" = $12
-      WHERE "id" = $13
-      RETURNING id
-    `;
-    const values = [
-      name.trim(),
-      slug,
-      category ? category.trim() : null,
-      branch_location ? branch_location.trim() : null,
-      description ? description.trim() : null,
-      logoUrl,
-      JSON.stringify(finalImagePaths),
-      map ? map.trim() : null,
-      accent ? accent.trim() : null,
-      instagram ? instagram.trim() : null,
-      is_sponsored !== undefined ? Boolean(is_sponsored) : false,
-      in_roll !== undefined ? Boolean(in_roll) : true,
-      id,
-    ];
+
+   const query = `
+  UPDATE "${TABLE}"
+  SET "name" = $1,
+      "slug" = $2,
+      "category" = $3,
+      "branch_location" = $4,
+      "description" = $5,
+      "logo_url" = $6,
+      "image_paths" = $7,
+      "map" = $8,
+      "accent" = $9,
+      "instagram" = $10,
+      "is_sponsored" = $11,
+      "in_roll" = $12,
+      "cuisines" = $13
+  WHERE "id" = $14
+  RETURNING id
+`;
+const values = [
+  name.trim(),
+  slug,
+  category ? category.trim() : null,
+  branch_location ? branch_location.trim() : null,
+  description ? description.trim() : null,
+  logoUrl,
+  JSON.stringify(finalImagePaths),
+  map ? map.trim() : null,
+  accent ? accent.trim() : null,
+  instagram ? instagram.trim() : null,
+  is_sponsored !== undefined ? Boolean(is_sponsored) : false,
+  in_roll !== undefined ? Boolean(in_roll) : true,
+  cuisineValue ? JSON.stringify(cuisineValue) : null,
+  id,
+];
 
     await zingoPool.query(query, values);
 
@@ -590,6 +626,8 @@ router.post('/products/add', handleMulter, async (req, res) => {
       subcategory,
       description,
       price,
+      grab_link,
+      foodpanda_link,
       is_sponsored,
       is_available,
     } = req.body;
@@ -633,26 +671,29 @@ router.post('/products/add', handleMulter, async (req, res) => {
       imageUrl = uploaded[0] || null;
     }
  
-    const query = `
-      INSERT INTO "${PRODUCTS_TABLE}" (
-        "shop_id", "name", "slug", "category", "subcategory",
-        "description", "price", "image_url", "is_sponsored", "is_available"
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      RETURNING id
-    `;
-    const values = [
-      shop_id,
-      name.trim(),
-      slug,
-      category,
-      subcategory ? subcategory.trim() : null,
-      description ? description.trim() : null,
-      parsedPrice,
-      imageUrl,
-      is_sponsored === 'true' || is_sponsored === true,
-      is_available === undefined ? true : (is_available === 'true' || is_available === true),
-    ];
+   const query = `
+  INSERT INTO "${PRODUCTS_TABLE}" (
+    "shop_id", "name", "slug", "category", "subcategory",
+    "description", "price", "image_url", "grab_link", "foodpanda_link",
+    "is_sponsored", "is_available"
+  )
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+  RETURNING id
+`;
+const values = [
+  shop_id,
+  name.trim(),
+  slug,
+  category,
+  subcategory ? subcategory.trim() : null,
+  description ? description.trim() : null,
+  parsedPrice,
+  imageUrl,
+  grab_link ? grab_link.trim() : null,
+  foodpanda_link ? foodpanda_link.trim() : null,
+  is_sponsored === 'true' || is_sponsored === true,
+  is_available === undefined ? true : (is_available === 'true' || is_available === true),
+];
  
     const result = await zingoPool.query(query, values);
     const productId = result.rows[0].id;
@@ -705,6 +746,8 @@ router.put('/products/eatdoko-products/:id', handleMulter, async (req, res) => {
       subcategory,
       description,
       price,
+        grab_link,
+  foodpanda_link,
       is_sponsored,
       is_available,
       existing_image_url,
@@ -764,34 +807,38 @@ router.put('/products/eatdoko-products/:id', handleMulter, async (req, res) => {
       imageUrl = null;
     }
  
-    const query = `
-      UPDATE "${PRODUCTS_TABLE}"
-      SET "shop_id" = $1,
-          "name" = $2,
-          "slug" = $3,
-          "category" = $4,
-          "subcategory" = $5,
-          "description" = $6,
-          "price" = $7,
-          "image_url" = $8,
-          "is_sponsored" = $9,
-          "is_available" = $10
-      WHERE "id" = $11
-      RETURNING id
-    `;
-    const values = [
-      effectiveShopId,
-      name.trim(),
-      slug,
-      effectiveCategory,
-      subcategory !== undefined ? (subcategory ? subcategory.trim() : null) : existing.subcategory,
-      description !== undefined ? (description ? description.trim() : null) : existing.description,
-      parsedPrice,
-      imageUrl,
-      is_sponsored !== undefined ? (is_sponsored === 'true' || is_sponsored === true) : existing.is_sponsored,
-      is_available !== undefined ? (is_available === 'true' || is_available === true) : existing.is_available,
-      id,
-    ];
+  const query = `
+  UPDATE "${PRODUCTS_TABLE}"
+  SET "shop_id" = $1,
+      "name" = $2,
+      "slug" = $3,
+      "category" = $4,
+      "subcategory" = $5,
+      "description" = $6,
+      "price" = $7,
+      "image_url" = $8,
+      "grab_link" = $9,
+      "foodpanda_link" = $10,
+      "is_sponsored" = $11,
+      "is_available" = $12
+  WHERE "id" = $13
+  RETURNING id
+`;
+const values = [
+  effectiveShopId,
+  name.trim(),
+  slug,
+  effectiveCategory,
+  subcategory !== undefined ? (subcategory ? subcategory.trim() : null) : existing.subcategory,
+  description !== undefined ? (description ? description.trim() : null) : existing.description,
+  parsedPrice,
+  imageUrl,
+  grab_link !== undefined ? (grab_link ? grab_link.trim() : null) : existing.grab_link,
+  foodpanda_link !== undefined ? (foodpanda_link ? foodpanda_link.trim() : null) : existing.foodpanda_link,
+  is_sponsored !== undefined ? (is_sponsored === 'true' || is_sponsored === true) : existing.is_sponsored,
+  is_available !== undefined ? (is_available === 'true' || is_available === true) : existing.is_available,
+  id,
+];
  
     await zingoPool.query(query, values);
  
@@ -813,5 +860,66 @@ router.put('/products/eatdoko-products/:id', handleMulter, async (req, res) => {
   }
 });
 
+
+router.get('/products', async (req, res) => {
+  try {
+    const { category, shop_id } = req.query;
+
+    const cacheKeyParts = [
+      (category && category.trim().toLowerCase()) || 'all',
+      (shop_id && String(shop_id).trim()) || 'all-shops',
+    ];
+    const cacheKey = cacheKeyParts.join(':');
+
+    const cached = productsCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+      const ageMs = Date.now() - cached.ts;
+      console.log(`[products] CACHE HIT key="${cacheKey}" age=${ageMs}ms`);
+      res.set('Cache-Control', 'public, max-age=30');
+      return res.status(200).json(cached.payload);
+    }
+
+    console.log(`[products] CACHE MISS key="${cacheKey}" (${cached ? 'expired' : 'not found'}) — querying DB`);
+
+    const conditions = [];
+    const values = [];
+
+    if (category && category.trim() && category.trim().toLowerCase() !== 'all') {
+      values.push(category.trim());
+      conditions.push(`"category" = $${values.length}`);
+    }
+
+    if (shop_id && String(shop_id).trim()) {
+      values.push(shop_id.trim());
+      conditions.push(`"shop_id" = $${values.length}`);
+    }
+
+    // Only surface products that are actually purchasable for the roll
+    conditions.push(`"is_available" = true`);
+
+    const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const result = await zingoPool.query(
+      `SELECT * FROM "${PRODUCTS_TABLE}" ${whereClause} ORDER BY "id" DESC`,
+      values
+    );
+
+    const categoriesResult = await zingoPool.query(
+      `SELECT DISTINCT "category" FROM "${PRODUCTS_TABLE}" WHERE "category" IS NOT NULL AND "category" != '' ORDER BY "category" ASC`
+    );
+    const categories = categoriesResult.rows.map((r) => r.category);
+
+    const payload = { data: result.rows, categories };
+    productsCache.set(cacheKey, { payload, ts: Date.now() });
+
+    console.log(`[products] CACHE SET key="${cacheKey}" rows=${result.rows.length}`);
+
+    res.set('Cache-Control', 'public, max-age=30');
+    return res.status(200).json(payload);
+  } catch (error) {
+    console.error('Error fetching products:', error);
+    return res.status(500).json({ error: 'Failed to fetch products. Please try again.' });
+  }
+});
 
 module.exports = router;
