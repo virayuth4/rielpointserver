@@ -184,7 +184,7 @@ function handleMulter(req, res, next) {
 
 
 const establishmentsCache = new Map();
-const CACHE_TTL_MS = 60  * 1000;
+const CACHE_TTL_MS = 600  * 1000;
 // ---------------------------------------------------------------------------
 // GET /establishments  (list all, optional ?category=)
 // ---------------------------------------------------------------------------
@@ -289,6 +289,7 @@ router.post('/establishments/add', handleMulter, async (req, res) => {
       is_sponsored,
       in_roll,
       cuisine,
+      price_range
     } = req.body;
         console.log("req body", req.body)
 
@@ -333,9 +334,9 @@ router.post('/establishments/add', handleMulter, async (req, res) => {
     const query = `
   INSERT INTO "${TABLE}" (
     "name", "slug", "category", "branch_location", "description",
-    "logo_url", "image_paths", "map", "accent", "instagram", "is_sponsored", "in_roll", "cuisines"
+    "logo_url", "image_paths", "map", "accent", "instagram", "is_sponsored", "in_roll", "cuisines", "price_range"
   )
-  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
   RETURNING id
 `;
 const values = [
@@ -352,6 +353,7 @@ const values = [
   is_sponsored === 'true' || is_sponsored === true,
   in_roll !== undefined ? Boolean(in_roll) : true,
   cuisineValue ? JSON.stringify(cuisineValue) : null,
+  price_range ? price_range.trim(): null,
 ];
     const result = await zingoPool.query(query, values);
     const establishmentId = result.rows[0].id;
@@ -408,6 +410,7 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
       existing_logo_url,
       existing_image_paths, // JSON-stringified array of urls the user chose to KEEP
       cuisine,
+      price_range
     } = req.body;
 
     if (!name || !name.trim()) {
@@ -491,8 +494,9 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
       "instagram" = $10,
       "is_sponsored" = $11,
       "in_roll" = $12,
-      "cuisines" = $13
-  WHERE "id" = $14
+      "cuisines" = $13,
+      "price_range" = $14
+  WHERE "id" = $15
   RETURNING id
 `;
 const values = [
@@ -509,6 +513,7 @@ const values = [
   is_sponsored !== undefined ? Boolean(is_sponsored) : false,
   in_roll !== undefined ? Boolean(in_roll) : true,
   cuisineValue ? JSON.stringify(cuisineValue) : null,
+  price_range ? price_range.trim() : null,
   id,
 ];
 
