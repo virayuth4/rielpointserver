@@ -132,6 +132,21 @@ function parseExistingImagePaths(raw) {
   }
 }
 
+function parseTagsInput(raw) {
+  if (!raw) return null;
+
+  let list;
+  try {
+    const parsed = JSON.parse(raw);
+    list = Array.isArray(parsed) ? parsed : String(raw).split(',');
+  } catch {
+    list = String(raw).split(',');
+  }
+
+  const cleaned = list.map((t) => String(t).trim().toLowerCase()).filter(Boolean);
+  return cleaned.length ? cleaned : null;
+}
+
 function normalizeField(value) {
   if (Array.isArray(value)) value = value[0];
   if (value === undefined || value === null) return '';
@@ -141,7 +156,7 @@ function normalizeField(value) {
 function parseCuisineInput(raw, category) {
   console.log("raw", raw)
   console.log("category", category)
-  if (normalizeField(category).toLowerCase() !== 'restaurant') return null;
+  
 
   const rawValue = Array.isArray(raw) ? raw[0] : raw;
   if (!rawValue) return null;
@@ -158,11 +173,13 @@ function parseCuisineInput(raw, category) {
   return cleaned.length ? cleaned : null;
 }       
 
+const MAX_VIDEOS = 3;
+
 const uploadFields = upload.fields([
   { name: 'logo', maxCount: 1 },
   { name: 'images', maxCount: MAX_IMAGES },
+  { name: 'videos', maxCount: MAX_VIDEOS },
   { name: 'image', maxCount: 1 },
-  
 ]);
 
 function handleMulter(req, res, next) {
@@ -172,7 +189,7 @@ function handleMulter(req, res, next) {
         return res.status(400).json({ error: 'File size is too large. Maximum size is 50MB.' });
       }
       if (err.code === 'LIMIT_UNEXPECTED_FILE') {
-        return res.status(400).json({ error: `You can upload up to ${MAX_IMAGES} images.` });
+        return res.status(400).json({ error: `You can upload up to ${MAX_IMAGES} images and ${MAX_VIDEOS} videos.` });
       }
       return res.status(400).json({ error: err.message });
     } else if (err) {
@@ -182,9 +199,9 @@ function handleMulter(req, res, next) {
   });
 }
 
-
 const establishmentsCache = new Map();
 const CACHE_TTL_MS = 600  * 1000;
+
 // ---------------------------------------------------------------------------
 // GET /establishments  (list all, optional ?category=)
 // ---------------------------------------------------------------------------
@@ -228,17 +245,17 @@ router.get('/establishments', async (req, res) => {
     );
     const categories = categoriesResult.rows.map((r) => r.category);
 
-    const payload = { data: rows, categories };
-    establishmentsCache.set(cacheKey, { payload, ts: Date.now() });
-    console.log(`[establishments] CACHE SET key="${cacheKey}" rows=${rows.length}`);
+      const payload = { data: rows, categories };
+      establishmentsCache.set(cacheKey, { payload, ts: Date.now() });
+      console.log(`[establishments] CACHE SET key="${cacheKey}" rows=${rows.length}`);
 
-    res.set('Cache-Control', 'public, max-age=30');
-    return res.status(200).json(payload);
-  } catch (error) {
-    console.error('Error fetching establishments:', error);
-    return res.status(500).json({ error: 'Failed to fetch establishments. Please try again.' });
-  }
-});
+      res.set('Cache-Control', 'public, max-age=30');
+      return res.status(200).json(payload);
+    } catch (error) {
+      console.error('Error fetching establishments:', error);
+      return res.status(500).json({ error: 'Failed to fetch establishments. Please try again.' });
+    }
+  });
 // ---------------------------------------------------------------------------
 // GET /establishment/eatdoko-establishments/:id
 // ---------------------------------------------------------------------------
@@ -289,7 +306,8 @@ router.post('/establishments/add', handleMulter, async (req, res) => {
       is_sponsored,
       in_roll,
       cuisine,
-      price_range
+      price_range,
+      tags
     } = req.body;
         console.log("req body", req.body)
 
@@ -312,6 +330,11 @@ router.post('/establishments/add', handleMulter, async (req, res) => {
       return res.status(400).json({ error: `You can upload up to ${MAX_IMAGES} images.` });
     }
 
+    const videoFiles = req.files?.['videos'] || [];
+    if (videoFiles.length > MAX_VIDEOS) {
+      return res.status(400).json({ error: `You can upload up to ${MAX_VIDEOS} videos.` });
+    }
+
     const logoFile = req.files?.['logo']?.[0];
     let logoUrl = null;
     if (logoFile) {
@@ -328,15 +351,23 @@ router.post('/establishments/add', handleMulter, async (req, res) => {
       });
     }
 
+    let videoUrls = [];
+    if (videoFiles.length) {
+      videoUrls = await uploadMediaFilesToS3(videoFiles, slug, 'video', {
+        pathPrefix: 'eatdoko/establishments/videos',
+      });
+    }
+
     const cuisineValue = parseCuisineInput(cuisine, category);
+    const tagsValue = parseTagsInput(tags);
 
 
-    const query = `
+   const query = `
   INSERT INTO "${TABLE}" (
     "name", "slug", "category", "branch_location", "description",
-    "logo_url", "image_paths", "map", "accent", "instagram", "is_sponsored", "in_roll", "cuisines", "price_range"
+    "logo_url", "image_paths", "video_urls", "map", "accent", "instagram", "is_sponsored", "in_roll", "cuisines", "price_range", "tags"
   )
-  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
   RETURNING id
 `;
 const values = [
@@ -347,6 +378,7 @@ const values = [
   description ? description.trim() : null,
   logoUrl,
   JSON.stringify(imagePaths),
+  JSON.stringify(videoUrls),
   map ? map.trim() : null,
   accent ? accent.trim() : null,
   instagram ? instagram.trim() : null,
@@ -354,7 +386,9 @@ const values = [
   in_roll !== undefined ? Boolean(in_roll) : true,
   cuisineValue ? JSON.stringify(cuisineValue) : null,
   price_range ? price_range.trim(): null,
+  tagsValue ? JSON.stringify(tagsValue) : null,
 ];
+
     const result = await zingoPool.query(query, values);
     const establishmentId = result.rows[0].id;
 
@@ -363,7 +397,7 @@ const values = [
 
     return res.status(200).json({
       message: 'Establishment created successfully',
-      data: { establishmentId, logo_url: logoUrl, image_paths: imagePaths },
+      data: { establishmentId, logo_url: logoUrl, image_paths: imagePaths, video_urls: videoUrls },
     });
   } catch (error) {
     console.error('Error processing establishment creation:', error);
@@ -371,6 +405,34 @@ const values = [
       return res.status(400).json({ error: 'That slug is already in use by another establishment.' });
     }
     return res.status(500).json({ error: 'Failed to process establishment creation. Please try again.' });
+  }
+});
+
+router.get('/establishment/eatdoko-establishments/slug/:slug', async (req, res) => {
+  try {
+    const { slug } = req.params;
+
+    if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
+      return res.status(400).json({ error: 'Invalid establishment slug.' });
+    }
+
+    const result = await zingoPool.query(
+      `SELECT * FROM "${TABLE}" WHERE "slug" = $1 AND "is_active" = true`,
+      [slug]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Establishment not found.' });
+    }
+
+    const row = result.rows[0];
+    row.image_paths = parseExistingImagePaths(row.image_paths);
+
+    res.set('Cache-Control', 'public, max-age=300');
+    return res.status(200).json({ data: row });
+  } catch (error) {
+    console.error('Error fetching establishment by slug:', error);
+    return res.status(500).json({ error: 'Failed to fetch establishment. Please try again.' });
   }
 });
 
@@ -396,6 +458,7 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
 
     const existing = existingResult.rows[0];
     const existingImagePaths = parseExistingImagePaths(existing.image_paths);
+    const existingVideoUrls = parseExistingImagePaths(existing.video_urls);
 
     const {
       name,
@@ -408,9 +471,11 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
       is_sponsored,
       in_roll,
       existing_logo_url,
-      existing_image_paths, // JSON-stringified array of urls the user chose to KEEP
+      existing_image_paths,
+      existing_video_urls,
       cuisine,
-      price_range
+      price_range,
+      tags
     } = req.body;
 
     if (!name || !name.trim()) {
@@ -478,6 +543,36 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
 
     const finalImagePaths = [...keptImagePaths, ...uploadedImagePaths];
     const cuisineValue = parseCuisineInput(cuisine, category);
+    const tagsValue = parseTagsInput(tags);
+
+     // ---- Gallery videos ----
+    const keptVideoUrls = parseExistingImagePaths(existing_video_urls);
+    const removedVideoUrls = existingVideoUrls.filter((url) => !keptVideoUrls.includes(url));
+
+    const newVideoFiles = req.files?.['videos'] || [];
+
+    if (keptVideoUrls.length + newVideoFiles.length > MAX_VIDEOS) {
+      return res.status(400).json({ error: `You can upload up to ${MAX_VIDEOS} videos total.` });
+    }
+
+    let uploadedVideoUrls = [];
+    if (newVideoFiles.length) {
+      uploadedVideoUrls = await uploadMediaFilesToS3(newVideoFiles, slug, 'video', {
+        pathPrefix: 'eatdoko/establishments/videos',
+      });
+    }
+
+    if (removedVideoUrls.length) {
+      await Promise.all(
+        removedVideoUrls.map((url) =>
+          deleteFileFromS3?.(url).catch((e) =>
+            console.error('Failed to delete removed video from S3:', e)
+          )
+        )
+      );
+    }
+
+    const finalVideoUrls = [...keptVideoUrls, ...uploadedVideoUrls];
 
 
    const query = `
@@ -489,14 +584,16 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
       "description" = $5,
       "logo_url" = $6,
       "image_paths" = $7,
-      "map" = $8,
-      "accent" = $9,
-      "instagram" = $10,
-      "is_sponsored" = $11,
-      "in_roll" = $12,
-      "cuisines" = $13,
-      "price_range" = $14
-  WHERE "id" = $15
+      "video_urls" = $8,
+      "map" = $9,
+      "accent" = $10,
+      "instagram" = $11,
+      "is_sponsored" = $12,
+      "in_roll" = $13,
+      "cuisines" = $14,
+      "price_range" = $15,
+      "tags" = $16
+  WHERE "id" = $17
   RETURNING id
 `;
 const values = [
@@ -507,6 +604,7 @@ const values = [
   description ? description.trim() : null,
   logoUrl,
   JSON.stringify(finalImagePaths),
+  JSON.stringify(finalVideoUrls),
   map ? map.trim() : null,
   accent ? accent.trim() : null,
   instagram ? instagram.trim() : null,
@@ -514,6 +612,7 @@ const values = [
   in_roll !== undefined ? Boolean(in_roll) : true,
   cuisineValue ? JSON.stringify(cuisineValue) : null,
   price_range ? price_range.trim() : null,
+  tagsValue ? JSON.stringify(tagsValue) : null,
   id,
 ];
 
@@ -523,7 +622,7 @@ const values = [
 
     return res.status(200).json({
       message: 'Establishment updated successfully',
-      data: { establishmentId: id, logo_url: logoUrl, image_paths: finalImagePaths },
+      data: { establishmentId: id, logo_url: logoUrl, image_paths: finalImagePaths, video_urls: finalVideoUrls },
     });
   } catch (error) {
     console.error('Error processing establishment update:', error);
