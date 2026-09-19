@@ -43,7 +43,7 @@ const loadEnvironmentVariables = () => {
         "https://rielpoint.com",
         "https://www.rielpoint.com",
         "https://www.eatdoko.com",
-        "httos://eatdoko.com"
+        "https://eatdoko.com"
         
     ];
 
