@@ -2,10 +2,9 @@ const express = require("express");
 const { nanoid } = require("nanoid");
 const zingoPool = require("../../database/pgZingo");
 const pusherServer = require("../../lib/pusher");
-
 const router = express.Router();
-
 require("dotenv").config();
+
 
 const REEL_SIZE = 65;
 const WINNER_INDEX = 50;
@@ -14,224 +13,139 @@ const CARD_GAP = 12;
 const TOTAL_SLOT_WIDTH = CARD_WIDTH + CARD_GAP;
 const SPIN_DURATION = 5200;
 
-/* =========================================================
-   Helpers
-========================================================= */
-
 function shuffledCopy(arr) {
   const a = [...arr];
-
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [a[i], a[j]] = [a[j], a[i]];
   }
-
   return a;
 }
 
 function buildReelAndWinner(cafeIds) {
-  if (!Array.isArray(cafeIds) || cafeIds.length === 0) {
-    throw new Error("buildReelAndWinner received empty cafeIds");
-  }
-
   const laps = Math.ceil(REEL_SIZE / cafeIds.length);
-
-  let reel = Array.from(
-    { length: laps },
-    () => shuffledCopy(cafeIds)
-  ).flat();
-
+  let reel = Array.from({ length: laps }, () => shuffledCopy(cafeIds)).flat();
   reel = reel.slice(0, REEL_SIZE);
 
   const winnerId = reel[WINNER_INDEX];
+  const jitter = (Math.random() - 0.5) * (CARD_WIDTH - 28);
+  const targetOffset = -(WINNER_INDEX * TOTAL_SLOT_WIDTH + jitter);
 
-  const jitter =
-    (Math.random() - 0.5) * (CARD_WIDTH - 28);
-
-  const targetOffset =
-    -(WINNER_INDEX * TOTAL_SLOT_WIDTH + jitter);
-
-  return {
-    reel,
-    winnerId,
-    targetOffset,
-  };
+  return { reel, winnerId, targetOffset };
 }
 
-/* =========================================================
-   POST /api/eatdoko/session/create
-========================================================= */
-
+// POST /api/eatdoko/session/create
 router.post("/session/create", async (req, res) => {
   const { branch_location, selected_type } = req.body || {};
-
   const id = nanoid(8);
 
   try {
-    const result = await zingoPool.query(
-      `INSERT INTO eatdoko_sessions 
-       (id, branch_location, selected_type)
-       VALUES ($1, $2, $3)
-       RETURNING *`,
-      [
-        id,
-        branch_location ?? "ALL",
-        selected_type ?? "cafe",
-      ]
+    await zingoPool.query(
+      `INSERT INTO eatdoko_sessions (id, branch_location, selected_type)
+       VALUES ($1, $2, $3)`,
+      [id, branch_location ?? "ALL", selected_type ?? "cafe"]
     );
-
     res.json({ id });
   } catch (err) {
-    res.status(500).json({
-      error: "Failed to create session",
-      details: err.message,
-    });
+    console.error("Failed to create session:", err);
+    res.status(500).json({ error: "Failed to create session" });
   }
 });
 
-/* =========================================================
-   GET /api/eatdoko/session/:id
-========================================================= */
-
+// GET /api/eatdoko/session/:id
 router.get("/session/:id", async (req, res) => {
-  const sessionId = req.params.id;
-
+    
   try {
     const result = await zingoPool.query(
-      `SELECT * 
-       FROM eatdoko_sessions 
-       WHERE id = $1`,
-      [sessionId]
+      `SELECT * FROM eatdoko_sessions WHERE id = $1`,
+      [req.params.id]
     );
-
     const session = result.rows[0];
-
-    if (!session) {
-      return res.status(404).json({
-        error: "Not found",
-      });
-    }
+    if (!session) return res.status(404).json({ error: "Not found" });
 
     const inProgress =
       session.spinning &&
       session.spin_state &&
-      Date.now() -
-        new Date(session.started_at).getTime() <
-        session.spin_state.duration;
+      Date.now() - new Date(session.started_at).getTime() < session.spin_state.duration;
 
-    const response = {
+    res.json({
       branch_location: session.branch_location,
       selected_type: session.selected_type,
       spinning: inProgress,
       winner_store_id: session.winner_store_id,
-      started_at: session.started_at
-        ? new Date(session.started_at).getTime()
-        : null,
+      started_at: session.started_at ? new Date(session.started_at).getTime() : null,
       ...(session.spin_state || {}),
-    };
-
-    res.json(response);
-  } catch (err) {
-    res.status(500).json({
-      error: "Failed to fetch session",
-      details: err.message,
     });
-  }
-});
-
-/* =========================================================
-   POST /api/eatdoko/session/:id/spin
-========================================================= */
-
-router.post("/session/:id/spin", async (req, res) => {
-  const sessionId = req.params.id;
-
+  } catch (err) {router.post("/session/:id/spin", async (req, res) => {
   const { availableCafeIds } = req.body || {};
-
-  if (
-    !Array.isArray(availableCafeIds) ||
-    availableCafeIds.length === 0
-  ) {
-    return res.status(400).json({
-      error: "No cafes available",
-    });
+  if (!Array.isArray(availableCafeIds) || availableCafeIds.length === 0) {
+    return res.status(400).json({ error: "No cafes available" });
   }
 
-  let reel;
-  let winnerId;
-  let targetOffset;
-
-  try {
-    ({
-      reel,
-      winnerId,
-      targetOffset,
-    } = buildReelAndWinner(availableCafeIds));
-  } catch (err) {
-    return res.status(500).json({
-      error: "Failed to build spin reel",
-      details: err.message,
-    });
-  }
-
-  const spinState = {
-    reel,
-    targetOffset,
-    duration: SPIN_DURATION,
-  };
+  const { reel, winnerId, targetOffset } = buildReelAndWinner(availableCafeIds);
+  const spinState = { reel, targetOffset, duration: SPIN_DURATION };
 
   try {
     const result = await zingoPool.query(
       `UPDATE eatdoko_sessions
-       SET spinning = true,
-           spin_state = $1,
-           winner_store_id = $2,
-           started_at = now(),
-           last_active_at = now()
-       WHERE id = $3
-         AND (
-           spinning = false
-           OR started_at < now() - interval '6 seconds'
-         )
+       SET spinning = true, spin_state = $1, winner_store_id = $2,
+           started_at = now(), last_active_at = now()
+       WHERE id = $3 AND (spinning = false OR started_at < now() - interval '6 seconds')
        RETURNING *`,
-      [
-        spinState,
-        winnerId,
-        sessionId,
-      ]
+      [spinState, winnerId, req.params.id]
     );
 
     if (result.rowCount === 0) {
-      return res.status(409).json({
-        error: "Spin already in progress",
-      });
+      return res.status(409).json({ error: "Spin already in progress" });
     }
 
-    const payload = {
-      ...spinState,
-      winner_store_id: winnerId,
-    };
+    const payload = { ...spinState, winner_store_id: winnerId };
 
-    try {
-      await pusherServer.trigger(
-        `session-${sessionId}`,
-        "spin",
-        payload
-      );
-    } catch (pusherErr) {
-      // We don't fail the HTTP request here because
-      // the database spin was already created.
-    }
+    pusherServer.trigger(`session-${req.params.id}`, "spin", payload, socketId ? { socket_id: socketId } : undefined)
 
-    res.json({
-      ok: true,
-      ...payload,
-    });
+    res.json({ ok: true, ...payload }); // CHANGED — return the payload directly
   } catch (err) {
-    res.status(500).json({
-      error: "Failed to trigger spin",
-      details: err.message,
-    });
+    console.error("Failed to trigger spin:", err);
+    res.status(500).json({ error: "Failed to trigger spin" });
+  }
+});
+    console.error("Failed to fetch session:", err);
+    res.status(500).json({ error: "Failed to fetch session" });
+  }
+});
+
+// POST /api/eatdoko/session/:id/spin
+router.post("/session/:id/spin", async (req, res) => {
+  const { reel, winnerId, targetOffset } = req.body || {};
+  if (!Array.isArray(reel) || reel.length === 0 || winnerId == null) {
+    return res.status(400).json({ error: "Invalid spin payload" });
+  }
+
+  const spinState = { reel, targetOffset, duration: SPIN_DURATION };
+
+  try {
+    const result = await zingoPool.query(
+      `UPDATE eatdoko_sessions
+       SET spinning = true, spin_state = $1, winner_store_id = $2,
+           started_at = now(), last_active_at = now()
+       WHERE id = $3 AND (spinning = false OR started_at < now() - interval '6 seconds')
+       RETURNING *`,
+      [spinState, winnerId, req.params.id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(409).json({ error: "Spin already in progress" });
+    }
+
+    const payload = { ...spinState, winner_store_id: winnerId };
+    res.json({ ok: true, ...payload });
+
+    pusherServer
+      .trigger(`session-${req.params.id}`, "spin", payload)
+      .catch((err) => console.error("Pusher trigger failed:", err));
+  } catch (err) {
+    console.error("Failed to trigger spin:", err);
+    res.status(500).json({ error: "Failed to trigger spin" });
   }
 });
 
