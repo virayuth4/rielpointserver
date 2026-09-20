@@ -1,153 +1,84 @@
-// routes/seo-cafes.js
-const express = require("express");
-const zingoPool = require("../../database/pgZingo");
+// routes/seo-establishments.js
+const express = require('express');
+const zingoPool = require('../../database/pgZingo');
 
 const router = express.Router();
 
+const CACHE_TTL_MS = 60 * 60 * 1000; // 1hr
+const MAX_CACHE_ENTRIES = 500;
+const DEFAULT_LIMIT = 30;
+const MAX_LIMIT = 50;
 
+// Only the WHERE clause differs between categories
+const CATEGORIES = {
+  cafes: {
+    where: `"category" = 'cafe'`,
+  },
+  yakiniku: {
+    where: `"category" = 'restaurant'
+            AND (cuisines::text ILIKE '%yakiniku%' OR tags::text ILIKE '%yakiniku%')`,
+  },
+  bakeries: {
+    where: `("category" ILIKE '%bakery%'
+             OR cuisines::text ILIKE '%bakery%'
+             OR tags::text ILIKE '%bakery%')`,
+  },
+};
 
-const seoCafesCache = new Map();
-const seoYakinikuCache = new Map();
-const seoBakeryCache = new Map();
+const cache = new Map();
 
-const CACHE_TTL_MS = 600 * 60 * 1000; // 1hr, matches ISR revalidate
+function cacheSet(key, payload) {
+  if (cache.size >= MAX_CACHE_ENTRIES) {
+    cache.delete(cache.keys().next().value); // evict oldest
+  }
+  cache.set(key, { payload, ts: Date.now() });
+}
 
-router.get('/seo/best-cafes', async (req, res) => {
-    console.log("seo route hit")
+// Escape LIKE wildcards so user input is matched literally
+const escapeLike = (s) => s.replace(/[\\%_]/g, '\\$&');
+
+router.get('/seo/best/:type', async (req, res) => {
+  const { type } = req.params;
+  if (!Object.hasOwn(CATEGORIES, type)) {
+    return res.status(404).json({ error: 'Unknown category.' });
+  }
+
   try {
-    const { location, limit } = req.query;
-    const cacheKey = (location && location.trim().toLowerCase()) || 'all';
-
-    const cached = seoCafesCache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
-      res.set('Cache-Control', 'public, max-age=300');
-      return res.status(200).json(cached.payload);
-    }
-
-    const conditions = [`"category" = 'cafe'`];
-    const values = [];
-
-    if (location && location.trim()) {
-      values.push(`%${location.trim()}%`);
-      conditions.push(`"branch_location" ILIKE $${values.length}`);
-    }
-
-    const whereClause = `WHERE ${conditions.join(' AND ')}`;
-    const rowLimit = Math.min(parseInt(limit, 10) || 30, 50);
-
-    const result = await zingoPool.query(
-      `SELECT id, name, slug, category, branch_location, description,
-              logo_url, map, accent, instagram, is_sponsored, image_paths
-       FROM eatdoko_establishments ${whereClause}
-       ORDER BY "id" DESC
-       LIMIT ${rowLimit}`,
-      values
-    );
-
-    const rows = result.rows.map((row) => ({
-      ...row,
-      
-    }));
-
-    const payload = { data: rows };
-    seoCafesCache.set(cacheKey, { payload, ts: Date.now() });
+    const location = (req.query.location || '').trim();
+    const rowLimit = Math.min(parseInt(req.query.limit, 10) || DEFAULT_LIMIT, MAX_LIMIT);
+    const cacheKey = `${type}:${location.toLowerCase() || 'all'}:${rowLimit}`;
 
     res.set('Cache-Control', 'public, max-age=300');
-    return res.status(200).json(payload);
-  } catch (error) {
-    console.error('Error fetching SEO cafes:', error);
-    return res.status(500).json({ error: 'Failed to fetch cafes.' });
-  }
-});
 
-router.get('/seo/best-yakiniku', async (req, res) => {
-  console.log("seo yakiniku route hit");
-  try {
-    const { location, limit } = req.query;
-    const cacheKey = (location && location.trim().toLowerCase()) || 'all';
-
-    const cached = seoYakinikuCache.get(cacheKey);
+    const cached = cache.get(cacheKey);
     if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
-      res.set('Cache-Control', 'public, max-age=300');
       return res.status(200).json(cached.payload);
     }
 
-    // category = restaurant, AND cuisines/tags jsonb contains 'yakiniku' (case-insensitive)
-    const conditions = [
-      `"category" = 'restaurant'`,
-      `(cuisines::text ILIKE '%yakiniku%' OR tags::text ILIKE '%yakiniku%')`,
-    ];
+    const conditions = [CATEGORIES[type].where];
     const values = [];
 
-    if (location && location.trim()) {
-      values.push(`%${location.trim()}%`);
+    if (location) {
+      values.push(`%${escapeLike(location)}%`);
       conditions.push(`"branch_location" ILIKE $${values.length}`);
     }
-
-    const whereClause = `WHERE ${conditions.join(' AND ')}`;
-    const rowLimit = Math.min(parseInt(limit, 10) || 30, 50);
 
     const result = await zingoPool.query(
       `SELECT *
-       FROM eatdoko_establishments ${whereClause}
+       FROM eatdoko_establishments
+       WHERE ${conditions.join(' AND ')}
        ORDER BY "id" DESC
        LIMIT ${rowLimit}`,
       values
     );
 
     const payload = { data: result.rows };
-    seoYakinikuCache.set(cacheKey, { payload, ts: Date.now() });
-
-    res.set('Cache-Control', 'public, max-age=300');
+    cacheSet(cacheKey, payload);
     return res.status(200).json(payload);
   } catch (error) {
-    console.error('Error fetching SEO yakiniku:', error);
-    return res.status(500).json({ error: 'Failed to fetch yakiniku restaurants.' });
+    console.error(`Error fetching SEO ${type}:`, error);
+    return res.status(500).json({ error: `Failed to fetch ${type}.` });
   }
 });
 
-router.get('/seo/best-bakeries', async (req, res) => {
-  console.log('seo bakery route hit');
-  try {
-    const { location, limit } = req.query;
-    const cacheKey = (location && location.trim().toLowerCase()) || 'all';
-
-    const cached = seoBakeryCache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
-      res.set('Cache-Control', 'public, max-age=300');
-      return res.status(200).json(cached.payload);
-    }
-
-    // category = bakery, OR cuisines/tags jsonb contains 'bakery' (case-insensitive)
-   const conditions = [
-  `("category" ILIKE '%bakery%' OR cuisines::text ILIKE '%bakery%' OR tags::text ILIKE '%bakery%')`,
-];
-    const values = [];
-
-    if (location && location.trim()) {
-      values.push(`%${location.trim()}%`);
-      conditions.push(`"branch_location" ILIKE $${values.length}`);
-    }
-
-    const whereClause = `WHERE ${conditions.join(' AND ')}`;
-    const rowLimit = Math.min(parseInt(limit, 10) || 30, 50);
-
-    const result = await zingoPool.query(
-      `SELECT *
-       FROM eatdoko_establishments ${whereClause}
-       ORDER BY "id" DESC
-       LIMIT ${rowLimit}`,
-      values
-    );
-
-    const payload = { data: result.rows };
-    seoBakeryCache.set(cacheKey, { payload, ts: Date.now() });
-
-    res.set('Cache-Control', 'public, max-age=300');
-    return res.status(200).json(payload);
-  } catch (error) {
-    console.error('Error fetching SEO bakeries:', error);
-    return res.status(500).json({ error: 'Failed to fetch bakeries.' });
-  }
-});
 module.exports = router;

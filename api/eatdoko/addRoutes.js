@@ -199,6 +199,43 @@ function handleMulter(req, res, next) {
   });
 }
 
+const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function parseOpeningHoursInput(input) {
+  if (input === undefined || input === null || input === '') return { value: null };
+
+  let parsed;
+  try {
+    parsed = typeof input === 'string' ? JSON.parse(input) : input;
+  } catch {
+    return { error: 'Opening hours must be valid JSON.' };
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { error: 'Opening hours are invalid.' };
+  }
+
+  const result = {};
+  for (const day of DAY_KEYS) {
+    const entry = parsed[day];
+    if (!entry) continue;
+
+    if (entry.closed === true) {
+      result[day] = { closed: true };
+      continue;
+    }
+    if (!entry.open && !entry.close) continue; // unset day
+
+    if (!TIME_RE.test(entry.open) || !TIME_RE.test(entry.close)) {
+      return { error: `Invalid opening hours for ${day}. Use HH:MM (24h).` };
+    }
+    result[day] = { closed: false, open: entry.open, close: entry.close };
+  }
+
+  return { value: Object.keys(result).length ? result : null };
+}
+
 const establishmentsCache = new Map();
 const CACHE_TTL_MS = 600  * 1000;
 
@@ -288,6 +325,34 @@ router.get('/establishment/eatdoko-establishments/:id', async (req, res) => {
   }
 });
 
+
+router.get('/establishment/eatdoko-establishments/slug/:slug', async (req, res) => {
+  try {
+    const { slug } = req.params;
+
+    if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
+      return res.status(400).json({ error: 'Invalid establishment slug.' });
+    }
+
+    const result = await zingoPool.query(
+      `SELECT * FROM "${TABLE}" WHERE "slug" = $1 AND "is_active" = true`,
+      [slug]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Establishment not found.' });
+    }
+
+    const row = result.rows[0];
+    row.image_paths = parseExistingImagePaths(row.image_paths);
+
+    res.set('Cache-Control', 'public, max-age=300');
+    return res.status(200).json({ data: row });
+  } catch (error) {
+    console.error('Error fetching establishment by slug:', error);
+    return res.status(500).json({ error: 'Failed to fetch establishment. Please try again.' });
+  }
+});
 // ---------------------------------------------------------------------------
 // POST /establishments/add
 // ---------------------------------------------------------------------------
@@ -307,7 +372,8 @@ router.post('/establishments/add', handleMulter, async (req, res) => {
       in_roll,
       cuisine,
       price_range,
-      tags
+      tags,
+      opening_hours
     } = req.body;
         console.log("req body", req.body)
 
@@ -358,6 +424,12 @@ router.post('/establishments/add', handleMulter, async (req, res) => {
       });
     }
 
+    const { value: openingHoursValue, error: openingHoursError } =
+      parseOpeningHoursInput(opening_hours);
+    if (openingHoursError) {
+      return res.status(400).json({ error: openingHoursError });
+    }
+
     const cuisineValue = parseCuisineInput(cuisine, category);
     const tagsValue = parseTagsInput(tags);
 
@@ -365,9 +437,9 @@ router.post('/establishments/add', handleMulter, async (req, res) => {
    const query = `
   INSERT INTO "${TABLE}" (
     "name", "slug", "category", "branch_location", "description",
-    "logo_url", "image_paths", "video_urls", "map", "accent", "instagram", "is_sponsored", "in_roll", "cuisines", "price_range", "tags"
+    "logo_url", "image_paths", "video_urls", "map", "accent", "instagram", "is_sponsored", "in_roll", "cuisines", "price_range", "tags", "opening_hours"
   )
-  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
   RETURNING id
 `;
 const values = [
@@ -387,6 +459,7 @@ const values = [
   cuisineValue ? JSON.stringify(cuisineValue) : null,
   price_range ? price_range.trim(): null,
   tagsValue ? JSON.stringify(tagsValue) : null,
+  openingHoursValue ? JSON.stringify(openingHoursValue) : null,
 ];
 
     const result = await zingoPool.query(query, values);
@@ -408,33 +481,7 @@ const values = [
   }
 });
 
-router.get('/establishment/eatdoko-establishments/slug/:slug', async (req, res) => {
-  try {
-    const { slug } = req.params;
 
-    if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
-      return res.status(400).json({ error: 'Invalid establishment slug.' });
-    }
-
-    const result = await zingoPool.query(
-      `SELECT * FROM "${TABLE}" WHERE "slug" = $1 AND "is_active" = true`,
-      [slug]
-    );
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'Establishment not found.' });
-    }
-
-    const row = result.rows[0];
-    row.image_paths = parseExistingImagePaths(row.image_paths);
-
-    res.set('Cache-Control', 'public, max-age=300');
-    return res.status(200).json({ data: row });
-  } catch (error) {
-    console.error('Error fetching establishment by slug:', error);
-    return res.status(500).json({ error: 'Failed to fetch establishment. Please try again.' });
-  }
-});
 
 // ---------------------------------------------------------------------------
 // PUT /establishment/eatdoko-establishments/:id
@@ -475,7 +522,8 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
       existing_video_urls,
       cuisine,
       price_range,
-      tags
+      tags,
+      opening_hours
     } = req.body;
 
     if (!name || !name.trim()) {
@@ -513,6 +561,12 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
       );
       logoUrl = null;
     }
+
+    const { value: openingHoursValue, error: openingHoursError } =
+  parseOpeningHoursInput(opening_hours);
+if (openingHoursError) {
+  return res.status(400).json({ error: openingHoursError });
+}
 
     // ---- Gallery images ----
     const keptImagePaths = parseExistingImagePaths(existing_image_paths);
@@ -575,7 +629,7 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
     const finalVideoUrls = [...keptVideoUrls, ...uploadedVideoUrls];
 
 
-   const query = `
+const query = `
   UPDATE "${TABLE}"
   SET "name" = $1,
       "slug" = $2,
@@ -592,8 +646,9 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
       "in_roll" = $13,
       "cuisines" = $14,
       "price_range" = $15,
-      "tags" = $16
-  WHERE "id" = $17
+      "tags" = $16,
+      "opening_hours" = $17
+  WHERE "id" = $18
   RETURNING id
 `;
 const values = [
@@ -613,6 +668,7 @@ const values = [
   cuisineValue ? JSON.stringify(cuisineValue) : null,
   price_range ? price_range.trim() : null,
   tagsValue ? JSON.stringify(tagsValue) : null,
+  openingHoursValue ? JSON.stringify(openingHoursValue) : null,
   id,
 ];
 
