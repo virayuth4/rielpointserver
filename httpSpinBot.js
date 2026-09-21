@@ -7,12 +7,14 @@ const BACKEND_URL =
   process.env.SPIN_BOT_URL ||
   `http://localhost:${PORT}/api/eatdoko/history/add`;
 
-const MIN_DELAY_MS = 5 * 1000;
-const MAX_DELAY_MS = 60 * 1000;
+const MIN_DELAY_MS = 19 * 1000;
+const MAX_DELAY_MS = 20 * 1000;
 const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // reload establishments hourly
 
 let establishments = [];
 let started = false;
+let hitTimer = null;
+let refreshTimer = null;
 
 async function loadEstablishments() {
   const query = `
@@ -64,13 +66,15 @@ function randomDelay() {
 }
 
 function scheduleNextHit() {
-  setTimeout(async () => {
+  if (!started) return; // stopped, don't queue more
+
+  hitTimer = setTimeout(async () => {
     try {
       await hitSpinRoute();
     } catch (err) {
       console.error("Testing History hit failed:", err.message);
     } finally {
-      scheduleNextHit(); // always queue the next one, even after an error
+      scheduleNextHit(); // no-op if the bot was stopped meanwhile
     }
   }, randomDelay());
 }
@@ -82,14 +86,14 @@ async function startSpinBot() {
   try {
     await loadEstablishments();
   } catch (err) {
-    // Don't let a bot failure take down your API
     console.error("Testing History failed to load establishments:", err.message);
     started = false;
     return;
   }
 
-  // Refresh the list hourly so new/removed shops get picked up
-  setInterval(() => {
+  if (!started) return; // stopSpinBot() was called during the load
+
+  refreshTimer = setInterval(() => {
     loadEstablishments().catch((err) =>
       console.error("Testing History refresh failed:", err.message)
     );
@@ -105,4 +109,15 @@ async function startSpinBot() {
   );
 }
 
-module.exports = { startSpinBot };
+function stopSpinBot() {
+  if (!started) return;
+  started = false;
+  clearTimeout(hitTimer);
+  clearInterval(refreshTimer);
+  hitTimer = null;
+  refreshTimer = null;
+  console.log("Testing History stopped.");
+}
+
+
+module.exports = { startSpinBot, stopSpinBot };

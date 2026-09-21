@@ -21,8 +21,7 @@ const userRoutes = require('./api/user/userRoutes')
 const merchantPointRoutes = require('./api/merchant/pointsRoutes')
 const merchantRoutes = require('./api/merchant/merchantRoutes')
 const shopifyRoutes = require('./api/shopify/shopifyRoutes');
-const { startSpinBot } = require('./httpSpinBot.js');
-
+const { startSpinBot, stopSpinBot } = require("./httpSpinBot");
 
 // CORS configuration
 const corsOptions = {
@@ -110,6 +109,17 @@ app.use('/api/eatdoko', require('./api/eatdoko/eventsRoutes.js'))
 
 
 async function startServer() {
+  const TZ = "Asia/Phnom_Penh";
+  function isActiveHours(tz, startHour = 9, endHour = 21) {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-GB", {
+      hour: "numeric",
+      hourCycle: "h23",
+      timeZone: tz,
+    }).format(new Date())
+  );
+  return hour >= startHour && hour < endHour;
+}
   const PORT = 9000
   const isProductionTest = config.isProductionTest?.() || false;
 
@@ -143,12 +153,20 @@ function localhostOnly(req, res, next) {
 
   initializeDatabases().catch(console.error);
 
-  app.listen(PORT,'0.0.0.0', () => {
-    console.log(`Server is running on port: ${PORT}`),
-    console.log(`Environment: ${process.env.NODE_ENV}`)
-    console.log('Client:', process.env.NEXT_PUBLIC_BACKEND)
+cron.schedule("0 21 * * *", stopSpinBot, { timezone: TZ });  // 9 PM: stop
+cron.schedule("0 9 * * *", startSpinBot, { timezone: TZ });   // 9 AM: start
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server is running on port: ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV}`);
+  console.log("Client:", process.env.NEXT_PUBLIC_BACKEND);
+
+  if (isActiveHours(TZ)) {
     startSpinBot();
-  })
+  } else {
+    console.log("Outside active hours, spinBot will start at 9 AM");
+  }
+});
 
  
 
