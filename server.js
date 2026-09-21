@@ -101,6 +101,7 @@ app.use('/api/eatdoko', require('./api/eatdoko/spinRoutes'))
 app.use('/api/eatdoko', require('./api/eatdoko/addRoutes.js'))
 app.use('/api/eatdoko', require('./api/eatdoko/seoRoutes.js'))
 app.use('/api/eatdoko', require('./api/eatdoko/eatdokoSessions.js'))
+app.use('/api/eatdoko', require('./api/eatdoko/eventsRoutes.js'))
 
 
 
