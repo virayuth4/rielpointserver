@@ -202,38 +202,47 @@ function handleMulter(req, res, next) {
 const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-function parseOpeningHoursInput(input) {
-  if (input === undefined || input === null || input === '') return { value: null };
+function parseOpeningHoursInput(raw) {
+  if (raw === undefined || raw === null || raw === '') return { value: null };
 
   let parsed;
   try {
-    parsed = typeof input === 'string' ? JSON.parse(input) : input;
+    parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
   } catch {
     return { error: 'Opening hours must be valid JSON.' };
   }
-
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { error: 'Opening hours are invalid.' };
+    return { error: 'Opening hours must be an object keyed by day.' };
   }
 
-  const result = {};
-  for (const day of DAY_KEYS) {
-    const entry = parsed[day];
-    if (!entry) continue;
+  const value = {};
+  for (const key of DAY_KEYS) {
+    const day = parsed[key];
+    if (!day) continue;
 
-    if (entry.closed === true) {
-      result[day] = { closed: true };
+    if (day.closed) {
+      value[key] = { closed: true, periods: [] };
       continue;
     }
-    if (!entry.open && !entry.close) continue; // unset day
 
-    if (!TIME_RE.test(entry.open) || !TIME_RE.test(entry.close)) {
-      return { error: `Invalid opening hours for ${day}. Use HH:MM (24h).` };
+    // Accept legacy { open, close } as a single period
+    const rawPeriods = Array.isArray(day.periods)
+      ? day.periods
+      : day.open || day.close
+      ? [{ open: day.open, close: day.close }]
+      : [];
+
+    const periods = [];
+    for (const p of rawPeriods) {
+      if (!TIME_RE.test(p?.open) || !TIME_RE.test(p?.close)) {
+        return { error: `Invalid opening hours for ${key}. Use HH:MM for both times.` };
+      }
+      periods.push({ open: p.open, close: p.close });
     }
-    result[day] = { closed: false, open: entry.open, close: entry.close };
+    if (periods.length) value[key] = { closed: false, periods };
   }
 
-  return { value: Object.keys(result).length ? result : null };
+  return { value: Object.keys(value).length ? value : null };
 }
 
 const establishmentsCache = new Map();
