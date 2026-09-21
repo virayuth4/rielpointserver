@@ -87,3 +87,5 @@ temp/
 .generateJWT
 
 .encryption.js
+
+httpSpinBot.js

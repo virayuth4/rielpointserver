@@ -21,6 +21,7 @@ const userRoutes = require('./api/user/userRoutes')
 const merchantPointRoutes = require('./api/merchant/pointsRoutes')
 const merchantRoutes = require('./api/merchant/merchantRoutes')
 const shopifyRoutes = require('./api/shopify/shopifyRoutes');
+const { startSpinBot } = require('./httpSpinBot.js');
 
 
 // CORS configuration
@@ -146,6 +147,7 @@ function localhostOnly(req, res, next) {
     console.log(`Server is running on port: ${PORT}`),
     console.log(`Environment: ${process.env.NODE_ENV}`)
     console.log('Client:', process.env.NEXT_PUBLIC_BACKEND)
+    startSpinBot();
   })
 
  

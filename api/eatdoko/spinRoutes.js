@@ -20,7 +20,8 @@ router.post("/history/add", async (req, res) => {
   console.log("Eat Doko History Add Route Hit");
 
   try {
-    const { userId, id, name, branch_location, logo_url, accentColor } = req.body;
+    const { userId, id, name, branch_location, logo_url} = req.body;
+    let accentColor = null
 
     if (!userId) {
       return res.status(400).json({ error: "userId is required" });
