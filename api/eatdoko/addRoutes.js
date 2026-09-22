@@ -147,6 +147,30 @@ function parseTagsInput(raw) {
   return cleaned.length ? cleaned : null;
 }
 
+function parsePhoneInput(phone) {
+  const value = (phone || '').trim();
+  if (!value) return { value: null };
+  if (!/^\+?[0-9\s\-().]{6,20}$/.test(value)) {
+    return { error: 'Phone number is invalid.' };
+  }
+  return { value };
+}
+
+function parseTelegramInput(telegram) {
+  const value = (telegram || '').trim();
+  if (!value) return { value: null };
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return { error: 'Telegram must be a valid URL (e.g. https://t.me/username).' };
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    return { error: 'Telegram must be a valid http(s) URL.' };
+  }
+  return { value };
+}
+
 function normalizeField(value) {
   if (Array.isArray(value)) value = value[0];
   if (value === undefined || value === null) return '';
@@ -382,7 +406,9 @@ router.post('/establishments/add', handleMulter, async (req, res) => {
       cuisine,
       price_range,
       tags,
-      opening_hours
+      opening_hours,
+      phone,
+      telegram
     } = req.body;
         console.log("req body", req.body)
 
@@ -409,6 +435,11 @@ router.post('/establishments/add', handleMulter, async (req, res) => {
     if (videoFiles.length > MAX_VIDEOS) {
       return res.status(400).json({ error: `You can upload up to ${MAX_VIDEOS} videos.` });
     }
+    const { value: phoneValue, error: phoneError } = parsePhoneInput(phone);
+    if (phoneError) return res.status(400).json({ error: phoneError });
+
+    const { value: telegramValue, error: telegramError } = parseTelegramInput(telegram);
+    if (telegramError) return res.status(400).json({ error: telegramError });
 
     const logoFile = req.files?.['logo']?.[0];
     let logoUrl = null;
@@ -446,9 +477,9 @@ router.post('/establishments/add', handleMulter, async (req, res) => {
    const query = `
   INSERT INTO "${TABLE}" (
     "name", "slug", "category", "branch_location", "description",
-    "logo_url", "image_paths", "video_urls", "map", "accent", "instagram", "is_sponsored", "in_roll", "cuisines", "price_range", "tags", "opening_hours"
+    "logo_url", "image_paths", "video_urls", "map", "accent", "instagram", "is_sponsored", "in_roll", "cuisines", "price_range", "tags", "opening_hours", phone, telegram
   )
-  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
   RETURNING id
 `;
 const values = [
@@ -469,6 +500,8 @@ const values = [
   price_range ? price_range.trim(): null,
   tagsValue ? JSON.stringify(tagsValue) : null,
   openingHoursValue ? JSON.stringify(openingHoursValue) : null,
+  phoneValue,
+  telegramValue,
 ];
 
     const result = await zingoPool.query(query, values);
@@ -532,7 +565,9 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
       cuisine,
       price_range,
       tags,
-      opening_hours
+      opening_hours,
+      phone,
+      telegram
     } = req.body;
 
     if (!name || !name.trim()) {
@@ -576,6 +611,12 @@ router.put('/establishment/eatdoko-establishments/:id', handleMulter, async (req
 if (openingHoursError) {
   return res.status(400).json({ error: openingHoursError });
 }
+
+const { value: phoneValue, error: phoneError } = parsePhoneInput(phone);
+if (phoneError) return res.status(400).json({ error: phoneError });
+
+const { value: telegramValue, error: telegramError } = parseTelegramInput(telegram);
+if (telegramError) return res.status(400).json({ error: telegramError });
 
     // ---- Gallery images ----
     const keptImagePaths = parseExistingImagePaths(existing_image_paths);
@@ -656,8 +697,10 @@ const query = `
       "cuisines" = $14,
       "price_range" = $15,
       "tags" = $16,
-      "opening_hours" = $17
-  WHERE "id" = $18
+      "opening_hours" = $17,
+      phone = $18,
+      telegram = $19
+  WHERE "id" = $20
   RETURNING id
 `;
 const values = [
@@ -678,6 +721,8 @@ const values = [
   price_range ? price_range.trim() : null,
   tagsValue ? JSON.stringify(tagsValue) : null,
   openingHoursValue ? JSON.stringify(openingHoursValue) : null,
+   phoneValue,
+  telegramValue,
   id,
 ];
 

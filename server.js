@@ -161,11 +161,11 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`Environment: ${process.env.NODE_ENV}`);
   console.log("Client:", process.env.NEXT_PUBLIC_BACKEND);
 
-  // if (isActiveHours(TZ)) {
-  //   startSpinBot();
-  // } else {
-  //   console.log("Outside active hours, spinBot will start at 9 AM");
-  // }
+  if (isActiveHours(TZ)) {
+    startSpinBot();
+  } else {
+    console.log("Outside active hours, spinBot will start at 9 AM");
+  }
 });
 
  

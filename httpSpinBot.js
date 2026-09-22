@@ -9,11 +9,21 @@ const BACKEND_URL =
 
 // ---- Behaviour tuning ------------------------------------------------------
 const WINDOW_MS = 60 * 1000; // one "minute" of activity
-const SESSIONS_PER_WINDOW = { min: 1, max: 2 }; // sessions started per window
+const SESSIONS_PER_WINDOW = { min: 3, max: 10 }; // sessions started per window
 const ROLLS_PER_SESSION = { min: 2, max: 5 }; // spins per session
 const ROLL_GAP_MS = 5 * 1000; // pause between spins inside a session
 const ROLL_GAP_JITTER_MS = 500; // +/- jitter so timing isn't robotic (0 = off)
 const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // reload establishments hourly
+
+
+const ALLOWED_CATEGORIES = ["cafe", "restaurant", "bakery"];
+// "Cafes" / "cafe " / "Restaurants" / "bakeries" all map to one canonical key.
+const categoryKey = (v) =>
+  String(v ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/ies$/, "y")
+    .replace(/s$/, "");
 
 // Longest a session can take (used to spread sessions inside a window)
 const MAX_SESSION_MS =
@@ -72,18 +82,19 @@ async function loadEstablishments() {
   const res = await zingoPool.query(query);
 
   const grouped = new Map();
+  let kept = 0;
   for (const row of res.rows) {
-    const category =
-      typeof row.category === "string" ? row.category.trim() : row.category;
-    if (!category) continue; // can't pick by category without one
+    const key = categoryKey(row.category);
+    if (!ALLOWED_CATEGORIES.includes(key)) continue; // skip anything else
 
-    if (!grouped.has(category)) grouped.set(category, []);
-    grouped.get(category).push(row);
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(row);
+    kept++;
   }
 
   establishmentsByCategory = grouped;
   console.log(
-    `Loaded ${res.rows.length} establishments across ${grouped.size} categories: ${[
+    `Loaded ${kept}/${res.rows.length} establishments across ${grouped.size} categories: ${[
       ...grouped.keys(),
     ].join(", ")}`
   );
@@ -93,11 +104,11 @@ async function loadEstablishments() {
 async function hitSpinRoute(cafe, category) {
   const payload = {
     userId: "bot_user_simulation",
-    id: cafe.id, // Maps to shop_id in your Express handler
+    id: cafe.id,
     name: cafe.name,
     branch_location: cafe.branch_location ?? null,
     logo_url: cafe.logo_url ?? null,
-    category,
+    category: cafe.category, // raw DB value, not the canonical key
   };
 
   try {
