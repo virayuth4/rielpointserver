@@ -272,6 +272,25 @@ function parseOpeningHoursInput(raw) {
 const establishmentsCache = new Map();
 const CACHE_TTL_MS = 600  * 1000;
 
+router.get('/establishment/eatdoko-establishments/slugs', async (req, res) => {
+
+  try {
+    const result = await zingoPool.query(
+      `SELECT "slug", "updated_at" 
+       FROM "eatdoko_establishments" 
+       WHERE "is_active" = true 
+       ORDER BY "updated_at" DESC`
+    );
+
+    // Cache on CDN/edge for 1 hour
+    res.set('Cache-Control', 'public, max-age=3600');
+    return res.status(200).json({ data: result.rows });
+  } catch (error) {
+    console.error('Error fetching establishment slugs:', error);
+    return res.status(500).json({ error: 'Failed to fetch slugs.' });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // GET /establishments  (list all, optional ?category=)
 // ---------------------------------------------------------------------------
@@ -357,6 +376,7 @@ router.get('/establishment/eatdoko-establishments/:id', async (req, res) => {
     return res.status(500).json({ error: 'Failed to fetch establishment. Please try again.' });
   }
 });
+
 
 
 router.get('/establishment/eatdoko-establishments/slug/:slug', async (req, res) => {
