@@ -28,7 +28,7 @@ router.post("/events/map", async (req, res) => {
 
     if (!userId) {
       return res.status(400).json({ error: "userId is required" });
-    }
+    }a
     if (!id || !name) {
       return res.status(400).json({ error: "cafe id and name are required" });
     }

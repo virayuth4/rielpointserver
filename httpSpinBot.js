@@ -8,8 +8,8 @@ const BACKEND_URL =
   `http://localhost:${PORT}/api/eatdoko/history/add`;
 
 // ---- Behaviour tuning ------------------------------------------------------
-const WINDOW_MS = 60 * 1000; // one "minute" of activity
-const SESSIONS_PER_WINDOW = { min: 5, max: 10 }; // sessions started per window
+const MIN_INTERVAL_MS = 5 * 60 * 1000;  // 5 minutes
+const MAX_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 const ROLLS_PER_SESSION = { min: 2, max: 5 }; // spins per session
 const ROLL_GAP_MS = 5 * 1000; // pause between spins inside a session
 const ROLL_GAP_JITTER_MS = 500; // +/- jitter so timing isn't robotic (0 = off)
@@ -160,25 +160,16 @@ async function runLoop(runId) {
   const isActive = () => started && runId === currentRun;
 
   while (isActive()) {
-    const windowStart = Date.now();
-    const sessions = randInt(SESSIONS_PER_WINDOW.min, SESSIONS_PER_WINDOW.max);
-    const slotMs = WINDOW_MS / sessions;
-    const slack = Math.max(0, slotMs - MAX_SESSION_MS);
-
-    for (let i = 0; i < sessions; i++) {
-      const startAt = windowStart + i * slotMs + randInt(0, slack);
-      await sleep(startAt - Date.now());
-      if (!isActive()) return;
-
-      try {
-        await runSession(isActive);
-      } catch (err) {
-        console.error("Testing History session failed:", err.message);
-      }
+    try {
+      await runSession(isActive);
+    } catch (err) {
+      console.error("Testing History session failed:", err.message);
     }
 
     if (!isActive()) return;
-    await sleep(windowStart + WINDOW_MS - Date.now()); // wait out the minute
+    const wait = randInt(MIN_INTERVAL_MS, MAX_INTERVAL_MS);
+    console.log(`Next session in ${Math.round(wait / 1000 / 60)} min`);
+    await sleep(wait);
   }
 }
 
