@@ -21,8 +21,10 @@ async function recordEvent({ userId, eventType, shopId = null, properties = {} }
 }
 
 router.post("/events/map", async (req, res) => {
+  console.log("Logging events");
   try {
-    const { userId, id, name, branch_location, isPartner, source } = req.body;
+    const { userId, id, name, branch_location, action, isPartner, source } = req.body;
+    console.log("req.body", req.body);
 
     if (!userId) {
       return res.status(400).json({ error: "userId is required" });
@@ -31,9 +33,18 @@ router.post("/events/map", async (req, res) => {
       return res.status(400).json({ error: "cafe id and name are required" });
     }
 
+    const validActions = ["map", "call", "telegram"];
+    const resolvedAction = validActions.includes(action) ? action : "map";
+
+    const eventTypeByAction = {
+      map: "map_click",
+      call: "call_click",
+      telegram: "telegram_click",
+    };
+
     await recordEvent({
       userId,
-      eventType: "map_click",
+      eventType: eventTypeByAction[resolvedAction],
       shopId: String(id),
       properties: {
         name,
@@ -45,8 +56,8 @@ router.post("/events/map", async (req, res) => {
 
     return res.sendStatus(204);
   } catch (err) {
-    console.error("Error recording map click:", err);
-    return res.status(500).json({ error: "Failed to record map click" });
+    console.error("Error recording event click:", err);
+    return res.status(500).json({ error: "Failed to record event click" });
   }
 });
 module.exports = router;

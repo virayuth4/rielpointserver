@@ -104,72 +104,75 @@ app.use('/api/eatdoko', require('./api/eatdoko/eatdokoSessions.js'))
 app.use('/api/eatdoko', require('./api/eatdoko/eventsRoutes.js'))
 
 
-
-
+const startBotHistoryCleanup = require("./helper/cleanUpBotHistory.js");
 
 
 async function startServer() {
   const TZ = "Asia/Phnom_Penh";
+  const isDev = process.env.NODE_ENV === "development";
+
   function isActiveHours(tz, startHour = 9, endHour = 21) {
-  const hour = Number(
-    new Intl.DateTimeFormat("en-GB", {
-      hour: "numeric",
-      hourCycle: "h23",
-      timeZone: tz,
-    }).format(new Date())
-  );
-  return hour >= startHour && hour < endHour;
-}
-  const PORT = 9000
+    const hour = Number(
+      new Intl.DateTimeFormat("en-GB", {
+        hour: "numeric",
+        hourCycle: "h23",
+        timeZone: tz,
+      }).format(new Date())
+    );
+    return hour >= startHour && hour < endHour;
+  }
+
+  const PORT = 9000;
   const isProductionTest = config.isProductionTest?.() || false;
 
-function localhostOnly(req, res, next) {
-  const ip = req.socket.remoteAddress;
-  if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') {
-    return next();
+  function localhostOnly(req, res, next) {
+    const ip = req.socket.remoteAddress;
+    if (ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1") {
+      return next();
+    }
+    res.status(404).end();
   }
-  res.status(404).end(); // pretend it doesn't exist
-}
 
-  console.log('\n🚀 Starting server...');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log(`🔧 Environment: ${process.env.NODE_ENV}${isProductionTest ? ' (Production Test)' : ''}`);
+  console.log("\n🚀 Starting server...");
+  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.log(`🔧 Environment: ${process.env.NODE_ENV}${isProductionTest ? " (Production Test)" : ""}`);
   console.log(`🌐 Port: ${PORT}`);
-  console.log(`🔌 Backend URL: ${process.env.NEXT_PUBLIC_BACKEND || 'Not set'}`);
-
-//   cron.schedule('* * * * *', () => {
-//     console.log('Running cleanup task...');
-//     deleteExpiredOTPs();
-// });
+  console.log(`🔌 Backend URL: ${process.env.NEXT_PUBLIC_BACKEND || "Not set"}`);
 
   try {
     const s3Connected = await testS3Connection();
     if (s3Connected) {
-      console.log("S3 bucket is configured correctly")
+      console.log("S3 bucket is configured correctly");
     }
   } catch (error) {
-    console.error("S3 bucket configuration failed")
+    console.error("S3 bucket configuration failed");
   }
 
   initializeDatabases().catch(console.error);
 
-cron.schedule("0 21 * * *", stopSpinBot, { timezone: TZ });  // 9 PM: stop
-cron.schedule("0 9 * * *", startSpinBot, { timezone: TZ });   // 9 AM: start
+  // Register scheduled tasks
+  if (!isDev) {
+    cron.schedule("0 21 * * *", stopSpinBot, { timezone: TZ }); // 9 PM: stop
+    cron.schedule("0 9 * * *", startSpinBot, { timezone: TZ });  // 9 AM: start
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server is running on port: ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV}`);
-  console.log("Client:", process.env.NEXT_PUBLIC_BACKEND);
-
-  if (isActiveHours(TZ)) {
-    startSpinBot();
+    // Midnight Cleanup Task (Runs at 00:00 Phnom Penh time)
+    startBotHistoryCleanup();
   } else {
-    console.log("Outside active hours, spinBot will start at 9 AM");
+    console.log("Development mode: spinBot and cleanup cron jobs disabled");
   }
-});
 
- 
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server is running on port: ${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV}`);
+    console.log("Client:", process.env.NEXT_PUBLIC_BACKEND);
 
+    if (isDev) {
+      console.log("Development mode: spinBot will not start");
+    } else if (isActiveHours(TZ)) {
+      startSpinBot();
+    } else {
+      console.log("Outside active hours, spinBot will start at 9 AM");
+    }
+  });
 }
-
 startServer()

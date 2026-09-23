@@ -9,7 +9,7 @@ const BACKEND_URL =
 
 // ---- Behaviour tuning ------------------------------------------------------
 const WINDOW_MS = 60 * 1000; // one "minute" of activity
-const SESSIONS_PER_WINDOW = { min: 3, max: 10 }; // sessions started per window
+const SESSIONS_PER_WINDOW = { min: 5, max: 10 }; // sessions started per window
 const ROLLS_PER_SESSION = { min: 2, max: 5 }; // spins per session
 const ROLL_GAP_MS = 5 * 1000; // pause between spins inside a session
 const ROLL_GAP_JITTER_MS = 500; // +/- jitter so timing isn't robotic (0 = off)
